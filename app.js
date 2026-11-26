@@ -117,7 +117,7 @@
   }
 
   /* ── state ───────────────────────────────────────────────── */
-  var state = { rooms: [], activeRoomId: null, settings: loadSettings(), updatedAt: 0 };
+  var state = { rooms: [], quotas: [], quotaRuns: [], activeRoomId: null, settings: loadSettings(), updatedAt: 0 };
   var ui = {
     dashboardOpen: !!state.settings.startDash,
     search: '',
@@ -220,6 +220,75 @@
     return list;
   }
 
+  /* ── 📊 AI-API-사용량 채널방 (비서 회의실과 분리된 방) ──────── */
+  var QUOTA_SLUG = 'api-usage';
+  var QUOTA_STATUS_LABEL = { ok: '정상', limited: '한도초과', error: '오류', unknown: '미확인' };
+
+  function quotaRoom() {
+    return state.rooms.find(function (r) { return r.slug === QUOTA_SLUG; }) || null;
+  }
+  function isQuotaRoom() {
+    var r = currentRoom();
+    return !!(r && r.slug === QUOTA_SLUG);
+  }
+  function mapQuota(row) {
+    return {
+      provider: row.provider,
+      label: row.label || row.provider,
+      emoji: row.emoji || '🔧',
+      category: row.category || '기타',
+      status: QUOTA_STATUS_LABEL[row.status] ? row.status : 'unknown',
+      available: row.available,
+      httpStatus: row.http_status,
+      remainingPct: row.remaining_pct == null ? null : Number(row.remaining_pct),
+      remainingText: row.remaining_text || '',
+      limitText: row.limit_text || '',
+      usedText: row.used_text || '',
+      resetAt: row.reset_at ? Date.parse(row.reset_at) : null,
+      guide: row.guide || '',
+      models: row.models || '',
+      notes: row.notes || '',
+      latencyMs: row.latency_ms,
+      sortOrder: row.sort_order || 100,
+      checkedAt: row.checked_at ? Date.parse(row.checked_at) : null
+    };
+  }
+  function mapRun(row) {
+    return {
+      id: row.id,
+      finishedAt: row.finished_at ? Date.parse(row.finished_at) : null,
+      ok: row.ok_count || 0,
+      limited: row.limited_count || 0,
+      error: row.error_count || 0,
+      unknown: row.unknown_count || 0,
+      total: row.total_count || 0
+    };
+  }
+  function sortQuotas() {
+    state.quotas.sort(function (a, b) {
+      if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+      return String(a.label).localeCompare(String(b.label), 'ko');
+    });
+  }
+  function quotaCounts() {
+    var c = { ok: 0, limited: 0, error: 0, unknown: 0, total: state.quotas.length };
+    state.quotas.forEach(function (q) { c[q.status] = (c[q.status] || 0) + 1; });
+    return c;
+  }
+  function lastMeasuredAt() {
+    if (state.quotaRuns.length && state.quotaRuns[0].finishedAt) return state.quotaRuns[0].finishedAt;
+    var latest = 0;
+    state.quotas.forEach(function (q) { if (q.checkedAt && q.checkedAt > latest) latest = q.checkedAt; });
+    return latest || null;
+  }
+  function applyQuotas(quotaRows, runRows) {
+    state.quotas = (quotaRows || []).map(mapQuota);
+    sortQuotas();
+    state.quotaRuns = (runRows || []).map(mapRun).sort(function (a, b) {
+      return (b.finishedAt || 0) - (a.finishedAt || 0);
+    }).slice(0, 8);
+  }
+
   function applySnapshot(rooms, assistants, messages) {
     var keepActive = state.activeRoomId;
     var out = rooms.map(function (r) {
@@ -273,9 +342,11 @@
     var res = await Promise.all([
       sb.from('rooms').select('*').order('created_at', { ascending: true }),
       sb.from('assistants').select('*').order('created_at', { ascending: true }),
-      sb.from('messages').select('*').order('created_at', { ascending: false }).limit(400)
+      sb.from('messages').select('*').order('created_at', { ascending: false }).limit(400),
+      sb.from('api_quotas').select('*').order('sort_order', { ascending: true }),
+      sb.from('api_quota_runs').select('*').order('finished_at', { ascending: false }).limit(8)
     ]);
-    var err = res[0].error || res[1].error || res[2].error;
+    var err = res[0].error || res[1].error || res[2].error || res[3].error || res[4].error;
     if (err) {
       setConn('error');
       toast('데이터를 불러오지 못했습니다: ' + err.message);
@@ -283,6 +354,7 @@
       return false;
     }
     applySnapshot(res[0].data || [], res[1].data || [], res[2].data || []);
+    applyQuotas(res[3].data || [], res[4].data || []);
     ui.loaded = true;
     renderAll();
     if (!ui.dashboardOpen) { renderChat(); settleAtBottom(); }
@@ -320,7 +392,9 @@
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'assistants' }, function (p) { onAssistantUpsert(p.new); })
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'assistants' }, function (p) { onAssistantDelete(p.old); })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'rooms' }, function (p) { onRoomUpsert(p.new); })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms' }, function (p) { onRoomUpsert(p.new); });
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms' }, function (p) { onRoomUpsert(p.new); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'api_quotas' }, function (p) { onQuotaChange(p); })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'api_quota_runs' }, function (p) { onQuotaRunInsert(p.new); });
 
     ch.subscribe(function (status) {
       if (ch !== channel) return;   // 이미 교체된 예전 채널의 콜백은 무시
@@ -382,6 +456,34 @@
     if (!ui.dashboardOpen) { renderChat(); scrollChatIfNearBottom(); }
   }
 
+  function onQuotaChange(payload) {
+    var row = payload.new && payload.new.provider ? payload.new : null;
+    if (!row) {
+      if (payload.old && payload.old.provider) {
+        state.quotas = state.quotas.filter(function (q) { return q.provider !== payload.old.provider; });
+      }
+    } else {
+      var mapped = mapQuota(row);
+      var i = state.quotas.findIndex(function (q) { return q.provider === mapped.provider; });
+      if (i >= 0) state.quotas[i] = mapped; else state.quotas.push(mapped);
+      sortQuotas();
+    }
+    state.updatedAt = Date.now();
+    renderTop();
+    renderDrawer();
+    if (isQuotaRoom()) renderQuota();
+  }
+
+  function onQuotaRunInsert(row) {
+    if (!row || !row.id) return;
+    var mapped = mapRun(row);
+    state.quotaRuns = state.quotaRuns.filter(function (r) { return r.id !== mapped.id; });
+    state.quotaRuns.unshift(mapped);
+    state.quotaRuns = state.quotaRuns.slice(0, 8);
+    if (isQuotaRoom()) renderQuota();
+    renderTop();
+  }
+
   function onRoomUpsert(row) {
     var room = roomById(row.id);
     if (room) {
@@ -410,6 +512,14 @@
     var room = currentRoom();
     var c = counts();
     $('#roomTitle').textContent = room ? room.name : '회의실';
+    if (room && room.slug === QUOTA_SLUG) {
+      var qc = quotaCounts();
+      var lastAt = lastMeasuredAt();
+      $('#roomMeta').textContent = 'API ' + qc.total + '개 · 정상 ' + qc.ok + ' · 한도초과 ' + qc.limited +
+        ' · ' + (lastAt ? '마지막 실측 ' + relTime(lastAt) : '실측 기록 없음');
+      $('#memberCount').textContent = String(qc.total);
+      return;
+    }
     if (!room) {
       $('#roomMeta').textContent = ui.loaded ? '회의실이 없습니다' : '불러오는 중…';
       $('#memberCount').textContent = '0';
@@ -498,6 +608,7 @@
 
   function renderChat(opts) {
     opts = opts || {};
+    if (isQuotaRoom()) return;   // 이 채널방은 카드 화면을 따로 쓴다
     var list = $('#chatList');
     var chatEl = $('#chatView');
     var room = currentRoom();
@@ -699,6 +810,7 @@
 
   function setDashboard(open) {
     ui.dashboardOpen = open;
+    if (isQuotaRoom()) { applyRoomMode(); return; }
     $('#dashboard').hidden = !open;
     $('#chatView').hidden = open;
     $('#summaryToggle').setAttribute('aria-expanded', String(open));
@@ -709,6 +821,117 @@
     } else {
       renderChat();
       settleAtBottom();
+    }
+    applyRoomMode();
+  }
+
+  /* ── rendering: 📊 AI-API-사용량 채널방 ──────────────────── */
+  function quotaDot(status) {
+    if (status === 'ok') return 'ok';
+    if (status === 'limited' || status === 'error') return 'risk';
+    return 'unknown';
+  }
+
+  function quotaChipsHTML(c) {
+    return [['ok', '정상', c.ok], ['limited', '한도초과', c.limited], ['error', '오류', c.error], ['unknown', '미확인', c.unknown]]
+      .map(function (p) {
+        return '<span class="q-chip" data-state="' + p[0] + '"><i></i>' + p[1] + ' <b>' + p[2] + '</b></span>';
+      }).join('');
+  }
+
+  function quotaCardHTML(q) {
+    var st = q.status;
+    var pct = q.remainingPct;
+    var value;
+    if (pct != null) {
+      value = '<span class="q-value">' + fmtPct(pct) + '<small>%</small></span><span class="q-value-sub">남음</span>';
+    } else if (st === 'ok') {
+      value = '<span class="q-value word ok">사용 가능</span>';
+    } else if (st === 'limited') {
+      value = '<span class="q-value word limited">한도 초과</span>';
+    } else if (st === 'error') {
+      value = '<span class="q-value word error">호출 오류</span>';
+    } else {
+      value = '<span class="q-value word">미확인</span>';
+    }
+    var bar = pct == null ? '' :
+      '<div class="bar"><i data-state="' + st + '" style="width:' + clamp(pct, 0, 100) + '%"></i></div>';
+    var meta = '';
+    if (q.remainingText) meta += '<span class="q-line">' + esc(q.remainingText) + '</span>';
+    if (q.limitText) meta += '<span class="q-line muted">' + esc(q.limitText) + '</span>';
+    if (q.resetAt) meta += '<span class="q-line accent">' + esc(relUntil(q.resetAt)) + '</span>';
+    if (q.notes) meta += '<span class="q-line warn">' + esc(q.notes) + '</span>';
+    return '<article class="q-card" data-state="' + st + '">' +
+      '<div class="q-top">' +
+      '<span class="q-emoji">' + esc(q.emoji) + '</span>' +
+      '<span class="q-name">' + esc(q.label) + '</span>' +
+      '<span class="q-badge" data-state="' + st + '">' + (QUOTA_STATUS_LABEL[st] || st) + '</span>' +
+      '</div>' +
+      '<div class="q-value-row">' + value + '</div>' +
+      bar +
+      '<div class="q-meta">' + meta + '</div>' +
+      (q.guide ? '<p class="q-guide">' + esc(q.guide) + '</p>' : '') +
+      '<div class="q-foot"><span>확인 ' + (q.checkedAt ? esc(relTime(q.checkedAt)) : '—') + '</span>' +
+      '<span>' + (q.httpStatus ? 'HTTP ' + q.httpStatus : '') + '</span></div>' +
+      '</article>';
+  }
+
+  function renderQuota() {
+    var c = quotaCounts();
+    var lastAt = lastMeasuredAt();
+    var lastEl = $('#quotaLast');
+    if (lastEl) {
+      if (lastAt) {
+        var fresh = (Date.now() - lastAt) < 6 * HOUR;
+        lastEl.innerHTML = '마지막 실측 <b>' + esc(fmtClock(lastAt)) + '</b> · ' + esc(relTime(lastAt)) +
+          (fresh ? '' : ' <span class="q-stale">· 갱신 필요</span>');
+      } else {
+        lastEl.textContent = '실측 기록 없음';
+      }
+    }
+    var chips = $('#quotaChips');
+    if (chips) chips.innerHTML = quotaChipsHTML(c);
+    var grid = $('#quotaGrid');
+    if (grid) {
+      grid.innerHTML = state.quotas.length
+        ? state.quotas.map(quotaCardHTML).join('')
+        : '<div class="q-empty">실측 기록이 없습니다.<br>서버에서 <code>check_api_quotas.py</code> 가 실행되면 카드가 채워집니다.</div>';
+    }
+    var runsEl = $('#quotaRuns');
+    if (runsEl) {
+      runsEl.innerHTML = state.quotaRuns.length ? state.quotaRuns.map(function (r) {
+        return '<div class="q-run">' +
+          '<span class="q-run-time">' + esc(dayLabel(r.finishedAt)) + ' ' + esc(fmtClock(r.finishedAt)) + '</span>' +
+          '<span class="q-run-nums"><b class="ok">' + r.ok + '</b> 정상 · <b class="lim">' + r.limited +
+          '</b> 한도 · <b class="err">' + r.error + '</b> 오류</span>' +
+          '</div>';
+      }).join('') : '<p class="set-hint">아직 실측 기록이 없습니다.</p>';
+    }
+    var rc = $('#quotaRunCount');
+    if (rc) rc.textContent = state.quotaRuns.length ? '(' + state.quotaRuns.length + '회)' : '';
+  }
+
+  /* 채널방과 회의실의 화면·컴포저를 서로 섮이지 않게 전환한다 */
+  function applyRoomMode() {
+    var quota = isQuotaRoom();
+    document.body.classList.toggle('quota-mode', quota);
+    var qv = $('#quotaView');
+    if (qv) qv.hidden = !quota;
+    var sum = $('#summaryBar');
+    if (sum) sum.hidden = quota;
+    var comp = $('#composer');
+    if (comp) comp.hidden = quota;
+    var members = $('#membersBtn');
+    if (members) members.hidden = quota;
+    var sBtn = $('#searchBtn');
+    if (sBtn) sBtn.hidden = quota;
+    if (quota) {
+      $('#chatView').hidden = true;
+      $('#dashboard').hidden = true;
+      if (ui.searchOpen) closeSearch();
+    } else {
+      $('#chatView').hidden = !!ui.dashboardOpen;
+      $('#dashboard').hidden = !ui.dashboardOpen;
     }
   }
 
@@ -735,38 +958,75 @@
     });
   }
 
+  function goRoom(r) {
+    if (r.id !== state.activeRoomId) {
+      state.activeRoomId = r.id;
+      ui.search = '';
+      $('#searchInput').value = '';
+      closeDrawer();
+      renderAll();
+      setDashboard(false);
+      if (!isQuotaRoom()) scrollToBottom();
+      toast('#' + r.name + (r.slug === QUOTA_SLUG ? ' 채널방으로 이동했습니다.' : ' 회의실로 이동했습니다.'));
+    } else {
+      closeDrawer();
+    }
+  }
+
   function renderDrawer() {
     var roomsEl = $('#roomList');
     roomsEl.innerHTML = '';
     if (!state.rooms.length) {
       roomsEl.innerHTML = '<p class="set-hint">회의실을 불러오는 중…</p>';
     }
-    state.rooms.forEach(function (r) {
+    state.rooms.filter(function (r) { return r.slug !== QUOTA_SLUG; }).forEach(function (r) {
       var b = document.createElement('button');
       b.type = 'button';
       b.className = 'room-item' + (r.id === state.activeRoomId ? ' active' : '');
       b.innerHTML = '<span class="hash">#</span><span class="rname">' + esc(r.name) + '</span>' +
         '<small>' + r.assistants.length + '명</small>';
-      b.addEventListener('click', function () {
-        if (r.id !== state.activeRoomId) {
-          state.activeRoomId = r.id;
-          ui.search = '';
-          $('#searchInput').value = '';
-          closeDrawer();
-          renderAll();
-          setDashboard(false);
-          scrollToBottom();
-          toast('#' + r.name + ' 회의실로 이동했습니다.');
-        } else {
-          closeDrawer();
-        }
-      });
+      b.addEventListener('click', function () { goRoom(r); });
       roomsEl.appendChild(b);
     });
+
+    /* ── 채널방 목록 (비서 회의실과 명확히 구분) ── */
+    var chEl = $('#channelList');
+    if (chEl) {
+      chEl.innerHTML = '';
+      var qc = quotaCounts();
+      state.rooms.filter(function (r) { return r.slug === QUOTA_SLUG; }).forEach(function (r) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'room-item channel' + (r.id === state.activeRoomId ? ' active' : '');
+        var warn = qc.limited + qc.error;
+        var badge = !qc.total ? '실측 전' : (warn > 0 ? warn + ' 주의' : qc.total + '개 API');
+        b.innerHTML = '<span class="hash">#</span><span class="rname">' + esc(r.name) + '</span>' +
+          '<small>' + esc(badge) + '</small>';
+        b.addEventListener('click', function () { goRoom(r); });
+        chEl.appendChild(b);
+      });
+    }
 
     var listEl = $('#drawerAssistants');
     listEl.innerHTML = '';
     var room = currentRoom();
+    var lbl = $('#drawerMembersLabel');
+    if (lbl) lbl.textContent = isQuotaRoom() ? 'API 상태' : '참여 비서';
+    if (isQuotaRoom()) {
+      $('#drawerMemberCount').textContent = state.quotas.length;
+      if (!state.quotas.length) {
+        listEl.innerHTML = '<p class="set-hint">실측 기록이 없습니다.</p>';
+      }
+      state.quotas.forEach(function (q) {
+        var row = document.createElement('div');
+        row.className = 'da-row';
+        row.innerHTML = '<span class="dot" data-state="' + quotaDot(q.status) + '"></span>' +
+          '<span class="da-name">' + esc(q.emoji) + ' ' + esc(q.label) + '</span>' +
+          '<span class="da-pct">' + (q.remainingPct == null ? (QUOTA_STATUS_LABEL[q.status] || '—') : fmtPct(q.remainingPct) + '%') + '</span>';
+        listEl.appendChild(row);
+      });
+      return;
+    }
     var assist = room ? room.assistants : [];
     $('#drawerMemberCount').textContent = assist.length;
     if (!assist.length) {
@@ -834,14 +1094,17 @@
 
   function renderAll() {
     renderTop();
+    renderDrawer();
+    applyRoomMode();
+    if (isQuotaRoom()) { renderQuota(); return; }
     renderSummary();
     renderMentionChips();
-    renderDrawer();
     if (ui.dashboardOpen) renderDashboard(); else renderChat();
   }
 
   /* ── message actions ─────────────────────────────────────── */
   async function sendMessage() {
+    if (isQuotaRoom()) { toast('이 채널방은 읽기 전용입니다.'); return; }
     var input = $('#composerInput');
     var text = input.value.trim();
     var room = currentRoom();
@@ -1520,6 +1783,17 @@
       });
     });
 
+    var qRefresh = $('#quotaRefresh');
+    if (qRefresh) {
+      qRefresh.addEventListener('click', function () {
+        qRefresh.classList.add('spin');
+        setTimeout(function () { qRefresh.classList.remove('spin'); }, 700);
+        loadRemote({ silent: true }).then(function (ok) {
+          if (ok) toast('DB에서 최신 실측값을 불러왔습니다.');
+        });
+      });
+    }
+
     $('#dashBody').addEventListener('click', function (e) {
       var btn = e.target.closest('[data-act="edit"]');
       if (btn) openAssistantModal(btn.getAttribute('data-id'));
@@ -1737,7 +2011,8 @@
 
     setInterval(function () {
       renderSummary();
-      if (ui.dashboardOpen) renderDashboard();
+      if (isQuotaRoom()) { renderTop(); renderQuota(); }
+      else if (ui.dashboardOpen) renderDashboard();
       // 활동 시각이 오래된 비서의 온라인 표시 갱신
       var room = currentRoom();
       if (room) {

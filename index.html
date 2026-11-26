@@ -10,10 +10,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="비서 회의실" />
   <title># 비서-통합-회의실</title>
-  <link rel="manifest" href="manifest.webmanifest?v=1.1.2" />
+  <link rel="manifest" href="manifest.webmanifest?v=1.2.0" />
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="styles.css?v=1.1.2" />
+  <link rel="stylesheet" href="styles.css?v=1.2.0" />
 </head>
 <body>
   <div class="app" id="app">
@@ -107,10 +107,35 @@
         </div>
         <div class="dash-body" id="dashBody"></div>
       </section>
+
+      <!-- ── 📊 AI-API-사용량 채널방 (비서 회의실과 분리) ────────── -->
+      <section class="quota" id="quotaView" hidden aria-label="AI API 사용량">
+        <div class="q-scroll">
+          <div class="q-head">
+            <div class="q-head-top">
+              <div>
+                <h2>📊 AI API 사용량</h2>
+                <p class="q-last" id="quotaLast">실측 기록을 불러오는 중…</p>
+              </div>
+              <button class="dash-btn refresh" id="quotaRefresh" aria-label="DB에서 새로고침" title="DB에서 새로고침">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v4h-4"/></svg>
+              </button>
+            </div>
+            <div class="q-chips" id="quotaChips"></div>
+            <p class="q-explain">카드는 서버 실측 스크립트(<code>check_api_quotas.py</code>)가 채우고, 이 화면은 Supabase Realtime으로 새 결과를 자동 반영합니다. 브라우저가 API 키를 직접 호출하지 않으며, 숫자 옆 시각은 <b>마지막 실측 시각</b>입니다.</p>
+          </div>
+          <div class="q-grid" id="quotaGrid"></div>
+          <section class="q-runs">
+            <div class="q-runs-head">최근 실측 기록 <span id="quotaRunCount"></span></div>
+            <div class="q-run-list" id="quotaRuns"></div>
+          </section>
+          <p class="q-note">잔여 수치는 각 API가 실제로 응답한 값만 표시하고, 알 수 없는 항목은 '—'로 둡니다. 무료 한도는 서비스 정책에 따라 바뀔 수 있습니다.</p>
+        </div>
+      </section>
     </main>
 
     <!-- ── Composer ──────────────────────────────────────────── -->
-    <footer class="composer">
+    <footer class="composer" id="composer">
       <div class="quick-row" id="quickRow">
         <button class="chip" data-quick="meeting">회의 정리</button>
         <button class="chip" data-quick="todo">할 일 뽑기</button>
@@ -145,8 +170,12 @@
       <div class="drawer-label">회의실 <button class="mini-link" id="newRoomBtn">+ 새 회의실</button></div>
       <div class="room-list" id="roomList"></div>
     </div>
+    <div class="drawer-section">
+      <div class="drawer-label">채널방</div>
+      <div class="room-list" id="channelList"></div>
+    </div>
     <div class="drawer-section grow">
-      <div class="drawer-label">참여 비서 <span class="mini-count" id="drawerMemberCount">0</span></div>
+      <div class="drawer-label"><span id="drawerMembersLabel">참여 비서</span> <span class="mini-count" id="drawerMemberCount">0</span></div>
       <div class="drawer-assistants" id="drawerAssistants"></div>
     </div>
     <div class="drawer-foot">
@@ -374,7 +403,7 @@
             <button class="btn ghost" id="refreshBtn2">서버에서 새로고침</button>
           </div>
         </section>
-        <p class="app-version">비서 통합 회의실 · v<span id="appVersion">1.1.2</span> · Supabase 실시간</p>
+        <p class="app-version">비서 통합 회의실 · v<span id="appVersion">1.2.0</span> · Supabase 실시간</p>
       </div>
     </div>
   </div>
@@ -409,7 +438,7 @@
         <button class="menu-item" id="exportBtn"><span>JSON 내보내기</span><small>현재 회의실 데이터를 파일로 저장</small></button>
         <button class="menu-item" id="refreshBtn"><span>서버에서 새로고침</span><small>Supabase에서 최신 데이터를 다시 불러옵니다</small></button>
         <button class="menu-item" id="installBtn" hidden><span>홈 화면에 추가</span><small>앱처럼 전체 화면으로 실행합니다</small></button>
-        <button class="menu-item" id="aboutBtn"><span>앱 정보</span><small>v1.1.2 · Supabase 실시간 연동</small></button>
+        <button class="menu-item" id="aboutBtn"><span>앱 정보</span><small>v1.2.0 · Supabase 실시간 연동</small></button>
       </div>
     </div>
   </div>
@@ -505,8 +534,8 @@
       });
     })();
   </script>
-  <script src="config.js?v=1.1.2"></script>
+  <script src="config.js?v=1.2.0"></script>
   <script src="vendor/supabase.js"></script>
-  <script src="app.js?v=1.1.2"></script>
+  <script src="app.js?v=1.2.0"></script>
 </body>
 </html>
