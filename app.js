@@ -84,10 +84,10 @@
     var d = new Date(ts);
     return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
   }
-  function dateAtHour(offsetDays, hour) {
+  function nextHour(hour) {
     var d = new Date();
-    d.setDate(d.getDate() + offsetDays);
     d.setHours(hour, 0, 0, 0);
+    if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
     return d.getTime();
   }
 
@@ -115,9 +115,9 @@
 
     var assistants = [
       makeAssistant({ name: '인스팅트2', period: 'daily', remaining: 95, mode: 'auto', online: true,
-        resetAt: dateAtHour(0, 18), lastReportAt: mins(3) }, 0),
+        resetAt: nextHour(18), lastReportAt: mins(3) }, 0),
       makeAssistant({ name: '인스팅트1', period: 'daily', remaining: 96.9, mode: 'auto', online: true,
-        resetAt: dateAtHour(0, 18), lastReportAt: mins(5) }, 1),
+        resetAt: nextHour(18), lastReportAt: mins(5) }, 1),
       makeAssistant({ name: '김비서', period: 'daily', remaining: null, mode: 'auto', online: true }, 2),
       makeAssistant({ name: '피클2호기', period: 'daily', remaining: null, mode: 'auto', online: false }, 3),
       makeAssistant({ name: 'Muse2', period: 'weekly', remaining: 63, mode: 'auto', online: true,
