@@ -1492,7 +1492,9 @@
 
     var localHost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
     if ('serviceWorker' in navigator && (location.protocol === 'https:' || localHost)) {
-      navigator.serviceWorker.register('sw.js').catch(function () { /* offline support optional */ });
+      navigator.serviceWorker.register('sw.js').then(function (reg) {
+        if (reg && reg.update) reg.update();
+      }).catch(function () { /* offline support optional */ });
     }
   }
 

@@ -1,5 +1,7 @@
-/* 비서 통합 회의실 — offline shell */
-const CACHE = 'pickle-meeting-room-v1';
+/* 비서 통합 회의실 — offline shell
+   정책: HTML/CSS/JS 는 네트워크 우선(항상 최신), 실패 시 캐시.
+   이미지·매니페스트는 캐시 우선. */
+const CACHE = 'pickle-meeting-room-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -27,8 +29,11 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;
-  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;
 
+  // 문서: 네트워크 우선, 오프라인이면 캐시된 셸
   if (req.mode === 'navigate') {
     event.respondWith(
       fetch(req)
@@ -37,19 +42,33 @@ self.addEventListener('fetch', (event) => {
           caches.open(CACHE).then((cache) => cache.put('./index.html', copy));
           return res;
         })
-        .catch(() => caches.match('./index.html'))
+        .catch(() => caches.match('./index.html').then((hit) => hit || caches.match('./')))
     );
     return;
   }
 
-  event.respondWith(
-    caches.match(req).then((hit) => {
-      if (hit) return hit;
-      return fetch(req).then((res) => {
+  // 이미지/아이콘: 캐시 우선
+  if (req.destination === 'image') {
+    event.respondWith(
+      caches.match(req).then((hit) => hit || fetch(req).then((res) => {
         const copy = res.clone();
         caches.open(CACHE).then((cache) => cache.put(req, copy));
         return res;
-      });
-    })
+      }))
+    );
+    return;
+  }
+
+  // 스크립트/스타일/매니페스트: 네트워크 우선 → 실패 시 캐시
+  event.respondWith(
+    fetch(req)
+      .then((res) => {
+        if (res && res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then((cache) => cache.put(req, copy));
+        }
+        return res;
+      })
+      .catch(() => caches.match(req))
   );
 });
