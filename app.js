@@ -1962,8 +1962,10 @@
 
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState === 'visible') {
+        if (connState !== 'live' && navigator.onLine !== false) connectRealtime();
         renderSummary();
-        if (ui.dashboardOpen) renderDashboard();
+        if (isQuotaRoom()) { renderTop(); renderQuota(); }
+        else if (ui.dashboardOpen) renderDashboard();
       }
     });
 
