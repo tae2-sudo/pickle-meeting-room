@@ -463,8 +463,8 @@ const NOTION_KEY = ENV("NOTION_API_KEY");
 if (NOTION_KEY) addSecret(NOTION_KEY); // 오류 본문에 토큰이 섞여도 저장·응답 전에 지운다
 const NOTION_VERSION = "2022-06-28";
 const NOTION_LOG_PAGE = Deno.env.get("NOTION_LOG_PAGE_ID") || "42184f0c-8f19-8195-8eed-f4089917da7a";
-const NOTION_TOP_PAGES = 4; // 상위 페이지 블록 100개 × 4 = 400개까지 훑는다
-const NOTION_CHILD_PAGES = 12; // 본문을 읽을 하위 기획 페이지 수 상한
+const NOTION_TOP_PAGES = 12; // 상위 페이지 블록 100개 × 12 = 1,200개까지 훑는다
+const NOTION_CHILD_PAGES = 16; // 본문을 읽을 하위 기획 페이지 수 상한
 const NOTION_GAP_MS = 150; // Notion 3 req/s 제한 회피
 const NOTION_DEFAULT_CHARS = 200; // 내레이션 글자 수를 못 찾았을 때 Cloud TTS 1편 기본값
 
@@ -542,11 +542,43 @@ type NotionSync = {
   episodes: number;
   byProvider: Record<string, NotionHit>;
   hints: string[];
+  truncated?: boolean;
   error?: string;
 };
 
-async function collectNotionEpisodes(): Promise<{ episodes: NotionEpisode[]; blocks: number }> {
+const notionId = (v: unknown) => String(v || "").replace(/-/g, "");
+
+function pageTitle(p: Dict): string {
+  const props = (p && p.properties) || {};
+  for (const v of Object.values(props) as Dict[]) {
+    if (v && v.type === "title" && Array.isArray(v.title)) {
+      return v.title.map((x: Dict) => (x && x.plain_text) || "").join("");
+    }
+  }
+  return "";
+}
+
+// 상위 페이지가 길어져도(기록이 쌓일수록 블록이 늘어난다) 최신 편이 빠지지 않게,
+// 최신 편집순 검색으로 이 페이지의 하위 페이지만 따로 확인한다. 실패해도 치명적이지 않다(빈 배열).
+async function notionRecentChildPages(parentId: string): Promise<Dict[]> {
+  const r = await call("https://api.notion.com/v1/search", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + NOTION_KEY, "Notion-Version": NOTION_VERSION, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      page_size: 100,
+      sort: { direction: "descending", timestamp: "last_edited_time" },
+      filter: { property: "object", value: "page" },
+    }),
+  });
+  if (!r.ok) return [];
+  const want = notionId(parentId);
+  const results = Array.isArray(r.json?.results) ? r.json.results : [];
+  return results.filter((p: Dict) => p && p.parent && p.parent.type === "page_id" && notionId(p.parent.page_id) === want);
+}
+
+async function collectNotionEpisodes(): Promise<{ episodes: NotionEpisode[]; blocks: number; truncated: boolean }> {
   const top = await notionBlocks(NOTION_LOG_PAGE, NOTION_TOP_PAGES);
+  const truncated = top.length >= NOTION_TOP_PAGES * 100;
   const raw: NotionEpisode[] = [];
   let cur: NotionEpisode | null = null;
   for (const b of top) {
@@ -570,6 +602,16 @@ async function collectNotionEpisodes(): Promise<{ episodes: NotionEpisode[]; blo
       continue;
     }
     if (cur) cur.text += notionBlockText(b) + "\n";
+  }
+
+  // 블록을 끝까지 다 못 읽었거나 그 사이 새 기록이 올라왔을 때를 대비해, 최신 하위 기획 페이지를 검색으로 보충
+  const known = new Set(raw.map((e) => e.id));
+  for (const p of await notionRecentChildPages(NOTION_LOG_PAGE)) {
+    const id = String(p.id);
+    if (known.has(id)) continue;
+    const title = pageTitle(p) || "";
+    raw.push({ key: episodeKey(title) || id, id, title, created: String(p.created_time), text: "", page: true });
+    known.add(id);
   }
 
   // 하위 기획 페이지는 본문(제작·검수 기록)을 따로 읽는다(최근 것부터, 상한까지)
@@ -596,7 +638,7 @@ async function collectNotionEpisodes(): Promise<{ episodes: NotionEpisode[]; blo
     const createdFirst = Date.parse(prev.created) <= Date.parse(ep.created) ? prev.created : ep.created;
     merged[ep.key] = { ...longer, text: longer.text + "\n" + other.text, created: createdFirst };
   }
-  return { episodes: Object.values(merged), blocks: top.length };
+  return { episodes: Object.values(merged), blocks: top.length, truncated };
 }
 
 function notionUsage(episodes: NotionEpisode[], now: number): { byProvider: Record<string, NotionHit>; hints: string[] } {
@@ -636,7 +678,7 @@ async function notionSync(): Promise<NotionSync | null> {
   if (!NOTION_KEY) return null;
   const fetchedAt = iso(nowMs());
   try {
-    const { episodes, blocks } = await collectNotionEpisodes();
+    const { episodes, blocks, truncated } = await collectNotionEpisodes();
     const agg = notionUsage(episodes, nowMs());
     return {
       ok: true,
@@ -646,6 +688,7 @@ async function notionSync(): Promise<NotionSync | null> {
       episodes: episodes.length,
       byProvider: agg.byProvider,
       hints: agg.hints,
+      truncated,
     };
   } catch (exc) {
     return {
