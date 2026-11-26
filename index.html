@@ -397,6 +397,25 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <input type="file" id="importFile" accept="application/json,.json" hidden />
+  <script>
+    /* 서비스워커 갱신: 새 워커가 제어권을 잡으면 한 번 새로고침해 최신 파일을 받습니다. */
+    (function () {
+      if (!('serviceWorker' in navigator)) return;
+      var KEY = 'pickle-meeting-room.sw-reload';
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        try {
+          if (sessionStorage.getItem(KEY)) return;
+          sessionStorage.setItem(KEY, '1');
+        } catch (e) { return; }
+        location.reload();
+      });
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+          .then(function (reg) { if (reg && reg.update) reg.update(); })
+          .catch(function () {});
+      });
+    })();
+  </script>
   <script src="app.js"></script>
 </body>
 </html>
