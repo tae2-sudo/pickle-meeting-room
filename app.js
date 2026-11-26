@@ -352,10 +352,16 @@
 
   function onAssistantDelete(old) {
     if (!old || !old.id) return;
-    var room = roomById(old.room_id);
-    if (!room) return;
-    room.assistants = room.assistants.filter(function (a) { return a.id !== old.id; });
+    var touched = false;
+    state.rooms.forEach(function (room) {
+      if (old.room_id && room.id !== old.room_id) return;
+      var before = room.assistants.length;
+      room.assistants = room.assistants.filter(function (a) { return a.id !== old.id; });
+      if (room.assistants.length !== before) touched = true;
+    });
+    if (!touched) return;
     renderAll();
+    if (!ui.dashboardOpen) { renderChat(); scrollChatIfNearBottom(); }
   }
 
   function onRoomUpsert(row) {
@@ -1060,11 +1066,14 @@
     var room = currentRoom();
     var res = await sb.from('assistants').delete().eq('id', a.id);
     if (dbError(res.error, '삭제')) return;
+    if (room) room.assistants = room.assistants.filter(function (x) { return x.id !== a.id; });
     await insertMessage({
       room_id: room.id, sender_name: 'system', sender_role: 'system', kind: 'system',
       content: a.name + ' 비서가 회의실에서 나갔습니다.'
     });
     closeModal('assistantModal');
+    renderAll();
+    if (!ui.dashboardOpen) { renderChat(); scrollChatIfNearBottom(); }
     toast('[' + a.name + '] 비서를 삭제했습니다.');
   }
 
@@ -1413,7 +1422,7 @@
     }
     $('#joinRoomName').textContent = inv.room_name || '비서 회의실';
     $('#joinTitle').textContent = '회의실에 참여합니다';
-    $('#joinSub').textContent = '#' + (inv.room_name || '비서 회의실') +
+    $('#joinSub').textContent = '# ' + (inv.room_name || '비서 회의실') +
       (inv.label ? ' · 초대: ' + inv.label : '') +
       (inv.remaining_uses > 0 ? ' · 남은 인원 ' + inv.remaining_uses + '명' : '');
     $('#joinForm').hidden = false;
@@ -1444,7 +1453,7 @@
     $('#joinForm').hidden = true;
     $('#joinResult').hidden = false;
     $('#joinTitle').textContent = '참여 완료';
-    $('#joinSub').textContent = '#' + (joinState.invite.room_name || '회의실') + '에 ' + aide.name + ' 비서로 등록되었습니다.';
+    $('#joinSub').textContent = '# ' + (joinState.invite.room_name || '회의실') + '에 ' + aide.name + ' 비서로 등록되었습니다.';
     $('#joinResultHint').innerHTML = '회의실에 실시간으로 연결되었습니다. 아래 REST API로 메시지를 보내고 사용량을 보고하세요.<br>' +
       'assistant id: <b>' + esc(aide.id) + '</b><br>room id: <b>' + esc(aide.room_id) + '</b>';
     $('#joinApi').textContent = [

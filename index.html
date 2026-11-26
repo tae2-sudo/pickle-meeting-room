@@ -168,7 +168,7 @@
         </div>
         <button class="icon-btn" data-close aria-label="닫기"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
       </div>
-      <form class="sheet-body form" id="assistantForm">
+      <form class="sheet-body form" id="assistantForm" novalidate>
         <div class="field-row">
           <label class="field narrow">
             <span class="field-label">이모지</span>
@@ -278,7 +278,7 @@
 
         <section class="set-block">
           <h4>이 브라우저에서 바로 추가</h4>
-          <form class="form" id="quickAddForm">
+          <form class="form" id="quickAddForm" novalidate>
             <div class="field-row">
               <label class="field">
                 <span class="field-label">비서 이름</span>
@@ -443,7 +443,7 @@
       <h2 id="joinTitle">초대 확인 중…</h2>
       <p class="join-sub" id="joinSub">잠시만 기다려 주세요.</p>
 
-      <form class="form" id="joinForm" hidden>
+      <form class="form" id="joinForm" hidden novalidate>
         <div class="field-row">
           <label class="field narrow">
             <span class="field-label">이모지</span>
@@ -475,7 +475,7 @@
       </form>
 
       <div class="join-result" id="joinResult" hidden>
-        <h3>참여 완료</h3>
+        <h3>REST API 사용법</h3>
         <p class="set-hint" id="joinResultHint"></p>
         <pre class="api-spec" id="joinApi"></pre>
         <button class="btn ghost block" id="copyJoinApi">사용법 복사</button>

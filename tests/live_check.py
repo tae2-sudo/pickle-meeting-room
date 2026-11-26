@@ -19,6 +19,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -45,7 +46,7 @@ HEADERS = {
 }
 
 results = []
-created = {'messages': [], 'assistants': [], 'invites': [], 'rooms': []}
+created = {'messages': [], 'assistants': [], 'invites': [], 'rooms': [], 'names': []}
 
 
 def call(method, path, body=None, prefer=None):
@@ -137,6 +138,7 @@ def main():
     aide_id = aide.get('id') if ok else None
     if aide_id:
         created['assistants'].append(aide_id)
+        created['names'].append(aide_name)
 
     status, ver2 = call('POST', '/rest/v1/rpc/verify_invite', {'p_token': token})
     check('초대 사용 횟수 증가', valid and isinstance(ver2, dict) and ver2.get('remaining_uses') == 1,
@@ -182,7 +184,13 @@ def cleanup():
         call('DELETE', '/rest/v1/messages?id=eq.%s' % mid)
     for aid in created['assistants']:
         call('DELETE', '/rest/v1/assistants?id=eq.%s' % aid)
-    # 테스트 초대는 select 정책이 없어 REST 로 지울 수 없다 (토큰 만료 없음, 남아도 무해)
+    # redeem_invite 가 남기는 참여 시스템 메시지도 정리
+    for name in created['names']:
+        status, rows = call('GET', '/rest/v1/messages?select=id,sender_role&sender_role=eq.system&content=like.*%s*' % urllib.parse.quote(name))
+        if status == 200 and isinstance(rows, list):
+            for row in rows:
+                call('DELETE', '/rest/v1/messages?id=eq.%s' % row['id'])
+    # 테스트 초대는 select 정책이 없어 REST 로 지울 수 없다 (남아도 무해, 인원 제한 2명)
 
 
 if __name__ == '__main__':
