@@ -249,6 +249,8 @@
     pendingReplies: []
   };
 
+  var installEvent = null;
+
   var saveTimer = null;
   function save() {
     clearTimeout(saveTimer);
@@ -1354,6 +1356,19 @@
     $('#exportBtn').addEventListener('click', function () { closeModal('moreModal'); exportData(); });
     $('#importBtn').addEventListener('click', function () { closeModal('moreModal'); $('#importFile').click(); });
     $('#resetBtn').addEventListener('click', function () { closeModal('moreModal'); resetDemo(); });
+    $('#installBtn').addEventListener('click', function () {
+      closeModal('moreModal');
+      if (!installEvent) { toast('브라우저 메뉴에서 "홈 화면에 추가"를 선택해 주세요.'); return; }
+      installEvent.prompt();
+      installEvent.userChoice.finally(function () { installEvent = null; $('#installBtn').hidden = true; });
+    });
+    window.addEventListener('beforeinstallprompt', function (e) {
+      e.preventDefault();
+      installEvent = e;
+      $('#installBtn').hidden = false;
+    });
+    window.addEventListener('appinstalled', function () { toast('홈 화면에 추가했습니다.'); });
+
     $('#aboutBtn').addEventListener('click', function () {
       closeModal('moreModal');
       toast('비서 통합 회의실 v' + APP_VERSION + ' · 데이터는 이 기기에만 저장됩니다.');
@@ -1462,6 +1477,9 @@
 
   /* ── boot ────────────────────────────────────────────────── */
   function boot() {
+    try {
+      if (new URLSearchParams(location.search).get('view') === 'dashboard') ui.dashboardOpen = true;
+    } catch (e) { /* older browser */ }
     bind();
     renderAll();
     setDashboard(ui.dashboardOpen);
