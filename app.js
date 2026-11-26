@@ -1,16 +1,22 @@
 /* ──────────────────────────────────────────────────────────────
-   비서 통합 회의실 — app logic (vanilla JS, no dependencies)
-   데이터는 브라우저 localStorage 에만 저장됩니다.
+   비서 통합 회의실 — app logic (vanilla JS + Supabase Realtime)
+   회의실 · 비서 · 메시지는 Supabase Postgres 에 저장되고
+   postgres_changes 로 실시간 동기화됩니다.
    ────────────────────────────────────────────────────────────── */
 (function () {
   'use strict';
 
-  var STORAGE_KEY = 'pickle-meeting-room.v1';
-  var APP_VERSION = '1.0.0';
+  var CFG = window.PICKLE_ROOM_CONFIG || {};
+  var APP_VERSION = CFG.appVersion || '1.1.0';
+  var INVITE_BASE = CFG.publicBase || (location.origin + location.pathname);
   var MIN = 60000, HOUR = 3600000, DAY = 86400000;
+  var ONLINE_MS = 60 * 60 * 1000;
 
   var COLORS = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899',
     '#8b5cf6', '#14b8a6', '#ef4444', '#3b82f6', '#84cc16'];
+
+  var SETTINGS_KEY = 'pickle-meeting-room.settings.v2';
+  var DEFAULT_SETTINGS = { risk: 10, soon: 30, staleHours: 6, startDash: false, enterSend: true };
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
@@ -84,193 +90,57 @@
     var d = new Date(ts);
     return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
   }
-  function nextHour(hour) {
-    var d = new Date();
-    d.setHours(hour, 0, 0, 0);
-    if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
-    return d.getTime();
+  function randomToken() {
+    var bytes = new Uint8Array(10);
+    (window.crypto || window.msCrypto).getRandomValues(bytes);
+    return Array.prototype.map.call(bytes, function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
   }
 
-  /* ── default / demo state ────────────────────────────────── */
-  function makeAssistant(o, i) {
-    return {
-      id: o.id || uid('a'),
-      name: o.name || '비서',
-      period: o.period === 'weekly' ? 'weekly' : 'daily',
-      mode: o.mode === 'manual' ? 'manual' : 'auto',
-      remaining: o.remaining == null || o.remaining === '' ? null : clamp(Number(o.remaining), 0, 100),
-      resetAt: o.resetAt || null,
-      lastReportAt: o.lastReportAt || null,
-      extra: o.extra || '',
-      note: o.note || '',
-      online: !!o.online,
-      color: o.color || COLORS[i % COLORS.length]
-    };
+  /* ── settings (기기별 환경 설정만 로컬에 저장) ─────────────── */
+  function loadSettings() {
+    var out = {};
+    Object.keys(DEFAULT_SETTINGS).forEach(function (k) { out[k] = DEFAULT_SETTINGS[k]; });
+    try {
+      var raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
+      if (raw && typeof raw === 'object') {
+        if (isFinite(raw.risk)) out.risk = clamp(Number(raw.risk), 1, 50);
+        if (isFinite(raw.soon)) out.soon = clamp(Number(raw.soon), 2, 80);
+        if (isFinite(raw.staleHours)) out.staleHours = clamp(Number(raw.staleHours), 1, 72);
+        out.startDash = !!raw.startDash;
+        out.enterSend = raw.enterSend !== false;
+      }
+    } catch (e) { /* ignore */ }
+    return out;
   }
-
-  function demoState() {
-    var now = Date.now();
-    var mins = function (m) { return now - m * MIN; };
-    var hrs = function (h) { return now - h * HOUR; };
-
-    var assistants = [
-      makeAssistant({ name: '인스팅트2', period: 'daily', remaining: 95, mode: 'auto', online: true,
-        resetAt: nextHour(18), lastReportAt: mins(3) }, 0),
-      makeAssistant({ name: '인스팅트1', period: 'daily', remaining: 96.9, mode: 'auto', online: true,
-        resetAt: nextHour(18), lastReportAt: mins(5) }, 1),
-      makeAssistant({ name: '김비서', period: 'daily', remaining: null, mode: 'auto', online: true }, 2),
-      makeAssistant({ name: '피클2호기', period: 'daily', remaining: null, mode: 'auto', online: false }, 3),
-      makeAssistant({ name: 'Muse2', period: 'weekly', remaining: 63, mode: 'auto', online: true,
-        resetAt: now + 3 * DAY + 23 * HOUR, lastReportAt: hrs(1), extra: '7.9B' }, 4),
-      makeAssistant({ name: 'Muse3', period: 'weekly', remaining: 75, mode: 'auto', online: true,
-        resetAt: now + 5 * DAY + 8 * HOUR, lastReportAt: mins(30), extra: '1B' }, 5),
-      makeAssistant({ name: 'Muse1', period: 'weekly', remaining: 96, mode: 'auto', online: true,
-        resetAt: now + 6 * DAY + 2 * HOUR, lastReportAt: hrs(2) }, 6),
-      makeAssistant({ name: 'Muse4', period: 'weekly', remaining: 96, mode: 'auto', online: true,
-        resetAt: now + 2 * DAY + 4 * HOUR, lastReportAt: hrs(2) }, 7),
-      makeAssistant({ name: '보리', period: 'weekly', remaining: null, mode: 'manual', online: false }, 8),
-      makeAssistant({ name: '수지', period: 'weekly', remaining: null, mode: 'auto', online: false }, 9)
-    ];
-
-    var messages = [
-      { id: uid('m'), type: 'system', text: '# 비서-통합-회의실 회의실이 열렸습니다. 비서 10명이 참여 중입니다.', at: hrs(8.6) },
-      { id: uid('m'), type: 'assistant', authorId: assistants[1].id, text: '좋은 아침입니다. 일일 사용량 96.9% 남았습니다. 오후 6시에 리셋됩니다.', at: hrs(8.5) },
-      { id: uid('m'), type: 'assistant', authorId: assistants[0].id, text: '인스팅트2도 일일 95% 남음입니다. 오늘은 여유가 있습니다.', at: hrs(8.4) },
-      { id: uid('m'), type: 'assistant', authorId: assistants[4].id, text: '주간 63% 남음, 리셋까지 3일 23시간. 추가 7.9B 크레딧도 있습니다.', at: hrs(8.1) },
-      { id: uid('m'), type: 'user', authorId: 'me', text: '@전체 오늘 오후 2시 주간 회의 준비 상황 공유해줘.', at: hrs(8.0) },
-      { id: uid('m'), type: 'assistant', authorId: assistants[5].id, text: '@나 주간 75% 남았고, 회의 안건 초안은 준비됐습니다. 리셋은 5일 8시간 후입니다.', at: hrs(7.9) },
-      { id: uid('m'), type: 'assistant', authorId: assistants[2].id, text: '회의실 링크 확인했습니다. 사용량은 아직 보고 전이라 곧 정리해서 올리겠습니다.', at: hrs(7.7) },
-      { id: uid('m'), type: 'user', authorId: 'me', text: '@김비서 잔여 사용량도 같이 올려줘.', at: hrs(7.6) },
-      { id: uid('m'), type: 'assistant', authorId: assistants[8].id, text: '네, 지금 정리해서 올리겠습니다. 회의록은 별도 스레드에 붙여둘게요.', at: hrs(7.2) },
-      { id: uid('m'), type: 'assistant', authorId: assistants[3].id, text: '지난 회의록 3건 정리해서 공유드렸습니다. 확인 부탁드립니다.', at: hrs(5.4) },
-      { id: uid('m'), type: 'assistant', authorId: assistants[9].id, text: '할 일 목록 초안 뽑았습니다. 담당자 배정만 남았습니다.', at: hrs(4.2) },
-      { id: uid('m'), type: 'assistant', authorId: assistants[6].id, text: 'Muse1 주간 96% 남음입니다. 이번 주는 넉넉합니다.', at: hrs(3.5) },
-      { id: uid('m'), type: 'user', authorId: 'me', text: '@Muse4 이번 주 리셋 일정 알려줘.', at: hrs(1.1) },
-      { id: uid('m'), type: 'assistant', authorId: assistants[7].id, text: '주간 96% 남음, 리셋까지 2일 4시간입니다. 회의 전에 한 번 더 보고드릴게요.', at: hrs(1.05) },
-      { id: uid('m'), type: 'system', text: 'Muse2 · Muse3의 사용량이 갱신되었습니다.', at: mins(30) }
-    ];
-
-    return {
-      version: 1,
-      activeRoomId: 'room-main',
-      rooms: [{
-        id: 'room-main',
-        name: '비서-통합-회의실',
-        createdAt: now - 30 * DAY,
-        assistants: assistants,
-        messages: messages
-      }],
-      settings: {
-        risk: 10,
-        soon: 30,
-        staleHours: 6,
-        autoReply: true,
-        startDash: false,
-        enterSend: true
-      },
-      updatedAt: now,
-      savedAt: now
-    };
+  function saveSettings() {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings)); } catch (e) { /* ignore */ }
   }
 
   /* ── state ───────────────────────────────────────────────── */
-  function normalizeState(raw) {
-    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.rooms) || !raw.rooms.length) return null;
-    var out = {
-      version: 1,
-      activeRoomId: raw.activeRoomId,
-      rooms: [],
-      settings: {
-        risk: 10, soon: 30, staleHours: 6,
-        autoReply: true, startDash: false, enterSend: true
-      },
-      updatedAt: raw.updatedAt || Date.now(),
-      savedAt: raw.savedAt || Date.now()
-    };
-    if (raw.settings && typeof raw.settings === 'object') {
-      var s = raw.settings;
-      if (isFinite(s.risk)) out.settings.risk = clamp(Number(s.risk), 1, 50);
-      if (isFinite(s.soon)) out.settings.soon = clamp(Number(s.soon), 2, 80);
-      if (isFinite(s.staleHours)) out.settings.staleHours = clamp(Number(s.staleHours), 1, 72);
-      out.settings.autoReply = s.autoReply !== false;
-      out.settings.startDash = !!s.startDash;
-      out.settings.enterSend = s.enterSend !== false;
-    }
-    raw.rooms.forEach(function (r, ri) {
-      if (!r || typeof r !== 'object') return;
-      var assistants = Array.isArray(r.assistants) ? r.assistants.map(function (a, i) { return makeAssistant(a, i); }) : [];
-      var ids = assistants.map(function (a) { return a.id; });
-      var messages = Array.isArray(r.messages) ? r.messages.filter(function (m) {
-        return m && (m.type === 'system' || (m.type === 'user' && m.authorId === 'me') ||
-          (m.type === 'assistant' && ids.indexOf(m.authorId) !== -1));
-      }).map(function (m) {
-        return {
-          id: m.id || uid('m'),
-          type: m.type,
-          authorId: m.authorId,
-          text: String(m.text == null ? '' : m.text),
-          at: Number(m.at) || Date.now()
-        };
-      }) : [];
-      messages.sort(function (a, b) { return a.at - b.at; });
-      out.rooms.push({
-        id: r.id || uid('room'),
-        name: String(r.name || ('회의실 ' + (ri + 1))).slice(0, 32),
-        createdAt: Number(r.createdAt) || Date.now(),
-        assistants: assistants,
-        messages: messages
-      });
-    });
-    if (!out.rooms.length) return null;
-    if (!out.rooms.some(function (r) { return r.id === out.activeRoomId; })) {
-      out.activeRoomId = out.rooms[0].id;
-    }
-    return out;
-  }
-
-  function loadState() {
-    try {
-      var raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        var parsed = normalizeState(JSON.parse(raw));
-        if (parsed) return parsed;
-      }
-    } catch (e) { /* ignore broken storage */ }
-    return demoState();
-  }
-
-  var state = loadState();
+  var state = { rooms: [], activeRoomId: null, settings: loadSettings(), updatedAt: 0 };
   var ui = {
     dashboardOpen: !!state.settings.startDash,
     search: '',
     searchOpen: false,
     editingId: null,
     promptHandler: null,
-    pendingReplies: []
+    loaded: false
   };
-
-  var installEvent = null;
-
-  var saveTimer = null;
-  function save() {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(function () {
-      try {
-        state.savedAt = Date.now();
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      } catch (e) {
-        toast('저장 공간이 부족해 저장하지 못했습니다.');
-      }
-    }, 90);
-  }
-  function touch() { state.updatedAt = Date.now(); save(); }
+  var connState = 'connecting';
+  var sb = null;
+  var channel = null;
+  var retryTimer = null;
 
   function currentRoom() {
+    if (!state.rooms.length) return null;
     var r = state.rooms.find(function (x) { return x.id === state.activeRoomId; });
     return r || state.rooms[0];
   }
+  function roomById(id) { return state.rooms.find(function (r) { return r.id === id; }) || null; }
   function assistantById(id) {
-    return currentRoom().assistants.find(function (a) { return a.id === id; });
+    var room = currentRoom();
+    if (!room) return null;
+    return room.assistants.find(function (a) { return a.id === id; }) || null;
   }
   function statusOf(a) {
     if (a.remaining == null || isNaN(a.remaining)) return 'unknown';
@@ -283,31 +153,244 @@
     return !!a.lastReportAt && (Date.now() - a.lastReportAt) < state.settings.staleHours * HOUR;
   }
   function counts() {
-    var c = { ok: 0, soon: 0, risk: 0, unknown: 0, total: 0, reported: 0, online: 1 };
-    currentRoom().assistants.forEach(function (a) {
-      c[statusOf(a)]++;
-      c.total++;
-      if (isReported(a)) c.reported++;
-      if (a.online) c.online++;
-    });
+    var c = { ok: 0, soon: 0, risk: 0, unknown: 0, total: 0, reported: 0, online: 0 };
+    var room = currentRoom();
+    if (room) {
+      room.assistants.forEach(function (a) {
+        c[statusOf(a)]++;
+        c.total++;
+        if (isReported(a)) c.reported++;
+        if (a.online) c.online++;
+      });
+    }
     return c;
+  }
+
+  /* ── mapping rows ────────────────────────────────────────── */
+  function mapAssistant(row, idx) {
+    var seen = row.last_seen_at ? Date.parse(row.last_seen_at) : 0;
+    return {
+      id: row.id,
+      roomId: row.room_id,
+      name: row.name || '비서',
+      handle: row.handle || '',
+      emoji: row.emoji || '🤖',
+      role: row.role || '',
+      provider: row.provider || '',
+      model: row.model || '',
+      plan: row.plan || '',
+      period: row.period === 'weekly' ? 'weekly' : 'daily',
+      mode: row.mode === 'manual' ? 'manual' : 'auto',
+      remaining: row.quota_percent == null ? null : Number(row.quota_percent),
+      resetAt: row.reset_at ? Date.parse(row.reset_at) : null,
+      lastReportAt: row.last_report_at ? Date.parse(row.last_report_at) : null,
+      lastSeenAt: seen || null,
+      online: row.status === 'online' && !!seen && (Date.now() - seen) < ONLINE_MS,
+      extra: row.extra || '',
+      note: row.note || '',
+      color: row.color || COLORS[(idx || 0) % COLORS.length]
+    };
+  }
+  function mapMessage(row) {
+    return {
+      id: row.id,
+      roomId: row.room_id,
+      type: row.sender_role === 'assistant' ? 'assistant' : (row.sender_role === 'system' ? 'system' : 'user'),
+      authorId: row.sender_id || (row.sender_role === 'user' ? 'me' : null),
+      text: row.content || '',
+      at: row.created_at ? Date.parse(row.created_at) : Date.now(),
+      name: row.sender_name || '',
+      emoji: row.sender_emoji || ''
+    };
+  }
+  function sortMessages(list) {
+    list.sort(function (a, b) { return a.at - b.at; });
+    return list;
+  }
+
+  function applySnapshot(rooms, assistants, messages) {
+    var keepActive = state.activeRoomId;
+    var out = rooms.map(function (r) {
+      return {
+        id: r.id,
+        slug: r.slug,
+        name: r.name || '회의실',
+        description: r.description || '',
+        createdAt: r.created_at ? Date.parse(r.created_at) : Date.now(),
+        assistants: [],
+        messages: []
+      };
+    });
+    var byId = {};
+    out.forEach(function (r) { byId[r.id] = r; });
+    (assistants || []).forEach(function (row, i) {
+      var a = mapAssistant(row, i);
+      if (byId[a.roomId]) byId[a.roomId].assistants.push(a);
+    });
+    (messages || []).forEach(function (row) {
+      if (byId[row.room_id]) byId[row.room_id].messages.push(mapMessage(row));
+    });
+    out.forEach(function (r) {
+      sortMessages(r.messages);
+      r.assistants.sort(function (a, b) { return (a.name || '').localeCompare(b.name || '', 'ko'); });
+    });
+    state.rooms = out;
+    state.activeRoomId = (keepActive && byId[keepActive]) ? keepActive : (out[0] ? out[0].id : null);
+    state.updatedAt = Date.now();
+  }
+
+  /* ── Supabase reads/writes ───────────────────────────────── */
+  function setConn(next) {
+    connState = next;
+    var el = $('#connChip');
+    var labels = { connecting: '연결 중…', live: '실시간 연결됨', error: '연결 끊김', offline: '오프라인' };
+    if (el) {
+      el.dataset.state = next;
+      el.title = '실시간 연결 상태 · ' + (labels[next] || next);
+    }
+    var txt = $('#connText');
+    if (txt) txt.textContent = labels[next] || next;
+    var sc = $('#setConn');
+    if (sc) sc.textContent = labels[next] || next;
+  }
+
+  async function loadRemote(opts) {
+    opts = opts || {};
+    if (!sb) return false;
+    if (!opts.silent) setConn('connecting');
+    var res = await Promise.all([
+      sb.from('rooms').select('*').order('created_at', { ascending: true }),
+      sb.from('assistants').select('*').order('created_at', { ascending: true }),
+      sb.from('messages').select('*').order('created_at', { ascending: false }).limit(400)
+    ]);
+    var err = res[0].error || res[1].error || res[2].error;
+    if (err) {
+      setConn('error');
+      toast('데이터를 불러오지 못했습니다: ' + err.message);
+      renderAll();
+      return false;
+    }
+    applySnapshot(res[0].data || [], res[1].data || [], res[2].data || []);
+    ui.loaded = true;
+    renderAll();
+    if (!ui.dashboardOpen) { renderChat(); settleAtBottom(); }
+    return true;
+  }
+
+  function reload(silent) {
+    loadRemote({ silent: silent }).then(function (ok) {
+      if (ok) toast(silent ? '최신 상태로 동기화했습니다.' : '데이터를 새로 불러왔습니다.');
+    });
+  }
+
+  function dbError(err, what) {
+    if (!err) return false;
+    toast(what + ' 실패: ' + (err.message || err));
+    return true;
+  }
+
+  async function insertMessage(row) {
+    var res = await sb.from('messages').insert(row).select().single();
+    return res;
+  }
+
+  /* ── realtime ────────────────────────────────────────────── */
+  function connectRealtime() {
+    if (!sb) return;
+    if (channel) { try { sb.removeChannel(channel); } catch (e) { /* ignore */ } channel = null; }
+    clearTimeout(retryTimer);
+    setConn(navigator.onLine === false ? 'offline' : 'connecting');
+
+    channel = sb.channel('meeting-room-live')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, function (p) { onMessageInsert(p.new); })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'assistants' }, function (p) { onAssistantUpsert(p.new); })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'assistants' }, function (p) { onAssistantUpsert(p.new); })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'assistants' }, function (p) { onAssistantDelete(p.old); })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'rooms' }, function (p) { onRoomUpsert(p.new); })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms' }, function (p) { onRoomUpsert(p.new); });
+
+    channel.subscribe(function (status) {
+      if (status === 'SUBSCRIBED') {
+        setConn('live');
+        if (!ui.loaded) loadRemote();
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        setConn('error');
+        retryTimer = setTimeout(function () { if (navigator.onLine !== false) connectRealtime(); }, 12000);
+      } else if (status === 'CLOSED') {
+        setConn('connecting');
+      }
+    });
+  }
+
+  function onMessageInsert(row) {
+    var room = roomById(row.room_id);
+    if (!room) { loadRemote({ silent: true }); return; }
+    var msg = mapMessage(row);
+    if (room.messages.some(function (m) { return m.id === msg.id; })) return;
+    room.messages.push(msg);
+    sortMessages(room.messages);
+    state.updatedAt = Date.now();
+    renderTop();
+    renderSummary();
+    if (room.id === state.activeRoomId) {
+      if (ui.dashboardOpen) renderDashboard();
+      else { renderChat(); scrollChatIfNearBottom(); }
+    }
+  }
+
+  function onAssistantUpsert(row) {
+    var room = roomById(row.room_id);
+    if (!room) { loadRemote({ silent: true }); return; }
+    var mapped = mapAssistant(row, room.assistants.length);
+    var i = room.assistants.findIndex(function (a) { return a.id === mapped.id; });
+    if (i >= 0) room.assistants[i] = mapped;
+    else room.assistants.push(mapped);
+    state.updatedAt = Date.now();
+    renderAll();
+    if (!ui.dashboardOpen) { renderChat(); scrollChatIfNearBottom(); }
+  }
+
+  function onAssistantDelete(old) {
+    if (!old || !old.id) return;
+    var room = roomById(old.room_id);
+    if (!room) return;
+    room.assistants = room.assistants.filter(function (a) { return a.id !== old.id; });
+    renderAll();
+  }
+
+  function onRoomUpsert(row) {
+    var room = roomById(row.id);
+    if (room) {
+      room.name = row.name || room.name;
+      room.description = row.description || room.description;
+      renderTop();
+      renderDrawer();
+    } else {
+      loadRemote({ silent: true });
+    }
   }
 
   /* ── toast ───────────────────────────────────────────────── */
   var toastTimer = null;
   function toast(msg) {
     var el = $('#toast');
+    if (!el) return;
     el.textContent = msg;
     el.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { el.classList.remove('show'); }, 2100);
+    toastTimer = setTimeout(function () { el.classList.remove('show'); }, 2400);
   }
 
   /* ── rendering: top bar & summary ────────────────────────── */
   function renderTop() {
     var room = currentRoom();
     var c = counts();
-    $('#roomTitle').textContent = room.name;
+    $('#roomTitle').textContent = room ? room.name : '회의실';
+    if (!room) {
+      $('#roomMeta').textContent = ui.loaded ? '회의실이 없습니다' : '불러오는 중…';
+      $('#memberCount').textContent = '0';
+      return;
+    }
     $('#roomMeta').textContent = room.messages.length + '개 메시지 · 온라인 ' + c.online + '/' + (c.total + 1);
     $('#memberCount').textContent = String(c.total + 1);
   }
@@ -319,16 +402,19 @@
     $('#sumOk').textContent = c.ok;
     $('#sumUnknown').textContent = c.unknown;
     [['#sumRisk', c.risk], ['#sumSoon', c.soon], ['#sumOk', c.ok], ['#sumUnknown', c.unknown]].forEach(function (pair) {
-      pair[0] && $(pair[0]).closest('.sum-count').classList.toggle('has', pair[1] > 0);
+      var el = $(pair[0]);
+      if (el) el.closest('.sum-count').classList.toggle('has', pair[1] > 0);
     });
     var diff = Date.now() - (state.updatedAt || Date.now());
-    var label = diff < 60 * 1000 ? '방금 갱신' : (Math.floor(diff / MIN) + '분 전 갱신');
+    var label = !state.updatedAt ? '—' : (diff < 60 * 1000 ? '방금 갱신' : (Math.floor(diff / MIN) + '분 전 갱신'));
     $('#summaryUpdated').textContent = label;
   }
 
   /* ── rendering: chat ─────────────────────────────────────── */
   function mentionMatcher() {
-    var names = ['전체'].concat(currentRoom().assistants.map(function (a) { return a.name; }));
+    var room = currentRoom();
+    if (!room) return null;
+    var names = ['전체'].concat(room.assistants.map(function (a) { return a.name; }));
     names = names.filter(Boolean).sort(function (a, b) { return b.length - a.length; });
     if (!names.length) return null;
     return new RegExp('@(' + names.map(escapeRegExp).join('|') + ')', 'g');
@@ -365,13 +451,25 @@
     if (last < text.length) appendHighlighted(target, text.slice(last), query);
   }
 
-  function avatarEl(name, color, size) {
+  function avatarEl(name, color, emoji, size) {
     var el = document.createElement('div');
     el.className = 'avatar';
     el.style.background = color || '#94a3b8';
     if (size) { el.style.width = size + 'px'; el.style.height = size + 'px'; }
-    el.textContent = (name || '?').trim().charAt(0).toUpperCase();
+    if (emoji) {
+      el.textContent = emoji;
+      el.classList.add('emoji');
+    } else {
+      el.textContent = (name || '?').trim().charAt(0).toUpperCase();
+    }
     return el;
+  }
+
+  function authorOf(msg) {
+    if (msg.type === 'user') return { name: '나', color: '#111827', emoji: '' };
+    var a = assistantById(msg.authorId);
+    if (a) return { name: a.name, color: a.color, emoji: a.emoji };
+    return { name: msg.name || '알 수 없음', color: '#94a3b8', emoji: msg.emoji || '' };
   }
 
   function renderChat(opts) {
@@ -382,23 +480,31 @@
     var prevTop = chatEl.scrollTop;
     var q = ui.search.trim().toLowerCase();
 
-    var msgs = room.messages;
+    var msgs = room ? room.messages.slice() : [];
     if (q) {
       msgs = msgs.filter(function (m) {
         if (m.type === 'system') return m.text.toLowerCase().indexOf(q) !== -1;
         var a = m.authorId === 'me' ? { name: '나' } : assistantById(m.authorId);
-        var name = a ? a.name : '';
+        var name = (a && a.name) || m.name || '';
         return m.text.toLowerCase().indexOf(q) !== -1 || name.toLowerCase().indexOf(q) !== -1;
       });
     }
 
-    if (q) {
-      $('#searchCount').textContent = msgs.length ? msgs.length + '개 일치' : '결과 없음';
-    } else {
-      $('#searchCount').textContent = '';
-    }
+    if (q) $('#searchCount').textContent = msgs.length ? msgs.length + '개 일치' : '결과 없음';
+    else $('#searchCount').textContent = '';
 
     list.innerHTML = '';
+
+    if (!room) {
+      var ph = document.createElement('div');
+      ph.className = 'chat-empty';
+      ph.innerHTML = ui.loaded
+        ? '<b>회의실이 없습니다</b>왼쪽 메뉴에서 새 회의실을 만들어 보세요.'
+        : '<b>회의실을 불러오는 중…</b>Supabase에 연결하고 있습니다.';
+      list.appendChild(ph);
+      return;
+    }
+
     if (!msgs.length) {
       var empty = document.createElement('div');
       empty.className = 'chat-empty';
@@ -431,13 +537,12 @@
         return;
       }
 
-      var isMe = msg.authorId === 'me';
-      var author = isMe ? { name: '나', color: '#111827' } : assistantById(msg.authorId);
-      if (!author) author = { name: '알 수 없음', color: '#94a3b8' };
+      var isMe = msg.type === 'user';
+      var author = authorOf(msg);
 
       var wrap = document.createElement('div');
       wrap.className = 'msg' + (isMe ? ' me' : '');
-      wrap.appendChild(avatarEl(author.name, author.color));
+      wrap.appendChild(avatarEl(author.name, author.color, author.emoji));
 
       var body = document.createElement('div');
       body.className = 'msg-body';
@@ -463,11 +568,8 @@
       list.appendChild(wrap);
     });
 
-    if (opts.bottom) {
-      requestAnimationFrame(scrollToBottom);
-    } else if (prevTop) {
-      chatEl.scrollTop = prevTop;
-    }
+    if (opts.bottom) requestAnimationFrame(scrollToBottom);
+    else if (prevTop) chatEl.scrollTop = prevTop;
   }
 
   function scrollToBottom() {
@@ -482,6 +584,13 @@
     if (document.fonts && document.fonts.ready) {
       document.fonts.ready.then(function () { scrollToBottom(); }).catch(function () {});
     }
+  }
+
+  function scrollChatIfNearBottom() {
+    var chatEl = $('#chatView');
+    if (chatEl.hidden) return;
+    var near = chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < 200;
+    if (near) requestAnimationFrame(scrollToBottom);
   }
 
   /* ── rendering: dashboard ────────────────────────────────── */
@@ -509,13 +618,14 @@
 
     var tags = '';
     if (a.extra) tags += '<span class="tag">추가 ' + esc(a.extra) + '</span>';
+    if (a.model) tags += '<span class="tag">' + esc(a.model) + '</span>';
     if (a.note) tags += '<span class="tag" title="' + esc(a.note) + '">' + esc(a.note) + '</span>';
 
     return '' +
       '<article class="card" data-id="' + esc(a.id) + '">' +
       '<div class="card-top">' +
       '<span class="dot" data-state="' + st + '"></span>' +
-      '<span class="card-name">' + esc(a.name) + '</span>' +
+      '<span class="card-name">' + esc(a.emoji) + ' ' + esc(a.name) + '</span>' +
       '<span class="badge' + (a.mode === 'manual' ? ' manual' : '') + '">' + (a.mode === 'manual' ? '수동' : '자동') + '</span>' +
       '</div>' +
       '<div class="pct-row">' +
@@ -546,6 +656,10 @@
       state.settings.risk + '% · 임박 <' + state.settings.soon + '% · ' +
       state.settings.staleHours + '시간 지나면 갱신 필요';
 
+    if (!room) {
+      $('#dashBody').innerHTML = '<div class="dash-empty">회의실을 불러오는 중입니다.</div>';
+      return;
+    }
     var daily = room.assistants.filter(function (a) { return a.period === 'daily'; });
     var weekly = room.assistants.filter(function (a) { return a.period === 'weekly'; });
 
@@ -585,11 +699,13 @@
     all.addEventListener('click', function () { insertMention('전체'); });
     row.appendChild(all);
 
-    currentRoom().assistants.forEach(function (a) {
+    var room = currentRoom();
+    if (!room) return;
+    room.assistants.forEach(function (a) {
       var b = document.createElement('button');
       b.type = 'button';
       b.className = 'm-chip';
-      b.textContent = '@' + a.name;
+      b.textContent = (a.emoji ? a.emoji + ' ' : '') + '@' + a.name;
       b.addEventListener('click', function () { insertMention(a.name); });
       row.appendChild(b);
     });
@@ -598,6 +714,9 @@
   function renderDrawer() {
     var roomsEl = $('#roomList');
     roomsEl.innerHTML = '';
+    if (!state.rooms.length) {
+      roomsEl.innerHTML = '<p class="set-hint">회의실을 불러오는 중…</p>';
+    }
     state.rooms.forEach(function (r) {
       var b = document.createElement('button');
       b.type = 'button';
@@ -607,11 +726,9 @@
       b.addEventListener('click', function () {
         if (r.id !== state.activeRoomId) {
           state.activeRoomId = r.id;
-          state.updatedAt = Date.now();
-          save();
           ui.search = '';
           $('#searchInput').value = '';
-        closeDrawer();
+          closeDrawer();
           renderAll();
           setDashboard(false);
           scrollToBottom();
@@ -625,7 +742,8 @@
 
     var listEl = $('#drawerAssistants');
     listEl.innerHTML = '';
-    var assist = currentRoom().assistants;
+    var room = currentRoom();
+    var assist = room ? room.assistants : [];
     $('#drawerMemberCount').textContent = assist.length;
     if (!assist.length) {
       listEl.innerHTML = '<p class="set-hint">아직 비서가 없습니다.</p>';
@@ -635,7 +753,7 @@
       var row = document.createElement('div');
       row.className = 'da-row';
       row.innerHTML = '<span class="dot" data-state="' + st + '"></span>' +
-        '<span class="da-name">' + esc(a.name) + '</span>' +
+        '<span class="da-name">' + esc(a.emoji) + ' ' + esc(a.name) + '</span>' +
         '<span class="da-pct">' + (a.remaining == null ? '—' : fmtPct(a.remaining) + '%') + '</span>';
       listEl.appendChild(row);
     });
@@ -644,7 +762,9 @@
   function renderMembers() {
     var listEl = $('#memberList');
     listEl.innerHTML = '';
-    $('#memberModalCount').textContent = currentRoom().assistants.length + 1;
+    var room = currentRoom();
+    var assist = room ? room.assistants : [];
+    $('#memberModalCount').textContent = assist.length + 1;
 
     var me = document.createElement('div');
     me.className = 'member-row';
@@ -652,14 +772,14 @@
       '<span class="m-name">나</span><span class="m-sub">회의실 관리자</span>';
     listEl.appendChild(me);
 
-    currentRoom().assistants.forEach(function (a) {
+    assist.forEach(function (a) {
       var st = statusOf(a);
       var row = document.createElement('div');
       row.className = 'member-row';
-      row.innerHTML = '<div class="avatar" style="background:' + esc(a.color) + ';width:32px;height:32px;border-radius:10px;font-size:12px">' +
-        esc(a.name.trim().charAt(0)) + '</div>' +
+      row.innerHTML = '<div class="avatar' + (a.emoji ? ' emoji' : '') + '" style="background:' + esc(a.color) + ';width:32px;height:32px;border-radius:10px;font-size:12px">' +
+        esc(a.emoji || a.name.trim().charAt(0)) + '</div>' +
         '<span class="m-name">' + esc(a.name) + '</span>' +
-        '<span class="m-sub">' + STATUS_LABEL[st] + (a.remaining == null ? '' : ' · ' + fmtPct(a.remaining) + '%') + '</span>' +
+        '<span class="m-sub">' + esc(a.role || STATUS_LABEL[st]) + (a.remaining == null ? '' : ' · ' + fmtPct(a.remaining) + '%') + '</span>' +
         '<button data-edit="' + esc(a.id) + '">입력</button>';
       listEl.appendChild(row);
     });
@@ -667,7 +787,8 @@
 
   function renderManageList() {
     var listEl = $('#manageList');
-    var assist = currentRoom().assistants;
+    var room = currentRoom();
+    var assist = room ? room.assistants : [];
     $('#setAssistCount').textContent = assist.length;
     listEl.innerHTML = '';
     if (!assist.length) {
@@ -679,7 +800,7 @@
       var row = document.createElement('div');
       row.className = 'manage-row';
       row.innerHTML = '<span class="dot" data-state="' + st + '"></span>' +
-        '<span class="m-name">' + esc(a.name) + '</span>' +
+        '<span class="m-name">' + esc(a.emoji) + ' ' + esc(a.name) + '</span>' +
         '<span class="m-sub">' + (a.period === 'daily' ? '일일' : '주간') + ' · ' +
         (a.remaining == null ? '미확인' : fmtPct(a.remaining) + '%') + '</span>' +
         '<button data-edit="' + esc(a.id) + '">수정</button>';
@@ -696,99 +817,49 @@
   }
 
   /* ── message actions ─────────────────────────────────────── */
-  function scrollChatIfNearBottom() {
-    var chatEl = $('#chatView');
-    var near = chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < 160;
-    if (near) requestAnimationFrame(scrollToBottom);
-  }
-
-  function extractMentions(text) {
-    var found = [];
-    var matcher = mentionMatcher();
-    if (!matcher) return found;
-    matcher.lastIndex = 0;
-    var m;
-    while ((m = matcher.exec(text)) !== null) {
-      if (found.indexOf(m[1]) === -1) found.push(m[1]);
-    }
-    return found;
-  }
-
-  function replyTextFor(a, text) {
-    var t = text || '';
-    if (/회의|안건|회의록/.test(t)) return '네, 회의 내용 정리해서 결정 사항과 할 일로 나눠 올리겠습니다.';
-    if (/할\s*일|todo|to-do/i.test(t)) return '할 일 뽑아서 담당자와 마감일 붙여 정리하겠습니다.';
-    if (/초안|작성|써/.test(t)) return '초안 먼저 잡아서 공유드리겠습니다. 수정할 부분 알려주세요.';
-    if (/사용량|잔여|리셋|한도/.test(t)) {
-      if (a.remaining == null) return '사용량은 아직 보고 전입니다. 확인해서 곧 올리겠습니다.';
-      return '현재 ' + fmtPct(a.remaining) + '% 남았습니다' + (a.resetAt ? ', ' + relUntil(a.resetAt) + '입니다.' : '입니다.');
-    }
-    var pool = [
-      '확인했습니다. 바로 처리하겠습니다.',
-      '네, 정리해서 공유드리겠습니다.',
-      '알겠습니다. 진행 상황은 이 스레드에 남길게요.',
-      '확인 후 결과 보고드리겠습니다.'
-    ];
-    return pool[Math.floor(Math.random() * pool.length)];
-  }
-
-  function scheduleReplies(mentionNames, text) {
-    if (!state.settings.autoReply) return;
-    var room = currentRoom();
-    var targets = [];
-    if (mentionNames.indexOf('전체') !== -1) {
-      targets = room.assistants.filter(function (a) { return a.online; }).slice(0, 2);
-    } else {
-      mentionNames.forEach(function (name) {
-        var a = room.assistants.find(function (x) { return x.name === name; });
-        if (a) targets.push(a);
-      });
-    }
-    targets.slice(0, 3).forEach(function (a, i) {
-      var roomId = room.id;
-      var timer = setTimeout(function () {
-        var target = state.rooms.find(function (r) { return r.id === roomId; });
-        if (!target || !state.settings.autoReply) return;
-        var still = target.assistants.find(function (x) { return x.id === a.id; });
-        if (!still) return;
-        target.messages.push({
-          id: uid('m'),
-          type: 'assistant',
-          authorId: still.id,
-          text: replyTextFor(still, text),
-          at: Date.now()
-        });
-        state.updatedAt = Date.now();
-        save();
-        if (state.activeRoomId === roomId) {
-          renderTop();
-          if (!ui.dashboardOpen) { renderChat(); scrollChatIfNearBottom(); }
-        }
-      }, 900 + i * 850 + Math.random() * 500);
-      ui.pendingReplies.push(timer);
-    });
-  }
-
-  function sendMessage() {
+  async function sendMessage() {
     var input = $('#composerInput');
     var text = input.value.trim();
+    var room = currentRoom();
     if (!text) {
       toast('보낼 내용을 입력하세요.');
       input.focus();
       return;
     }
-    var room = currentRoom();
-    room.messages.push({ id: uid('m'), type: 'user', authorId: 'me', text: text, at: Date.now() });
+    if (!room) { toast('회의실을 먼저 불러와 주세요.'); return; }
+
     input.value = '';
     autoGrow();
     hideMentionPop();
-    touch();
+
+    var tempId = uid('tmp');
+    room.messages.push({ id: tempId, roomId: room.id, type: 'user', authorId: 'me', text: text, at: Date.now(), name: '나', emoji: '' });
+    sortMessages(room.messages);
     if (ui.dashboardOpen) setDashboard(false);
     renderTop();
     renderChat({ bottom: true });
     settleAtBottom();
-    var mentions = extractMentions(text);
-    if (mentions.length) scheduleReplies(mentions, text);
+
+    var res = await insertMessage({
+      room_id: room.id,
+      sender_id: null,
+      sender_name: '나',
+      sender_role: 'user',
+      kind: 'text',
+      content: text
+    });
+
+    var r = roomById(room.id) || room;
+    r.messages = r.messages.filter(function (m) { return m.id !== tempId; });
+    if (res.error) {
+      toast('전송하지 못했습니다: ' + res.error.message);
+    } else if (res.data) {
+      var msg = mapMessage(res.data);
+      if (!r.messages.some(function (m) { return m.id === msg.id; })) r.messages.push(msg);
+      sortMessages(r.messages);
+    }
+    renderTop();
+    if (!ui.dashboardOpen) { renderChat(); settleAtBottom(); }
   }
 
   /* ── composer helpers ────────────────────────────────────── */
@@ -828,6 +899,7 @@
   function showMentionPop(ctx) {
     var pop = $('#mentionPop');
     var room = currentRoom();
+    if (!room) return;
     var q = ctx.query.toLowerCase();
     var names = [{ name: '전체', sub: '모든 비서' }].concat(room.assistants.map(function (a) {
       return { name: a.name, sub: a.remaining == null ? '미확인' : fmtPct(a.remaining) + '%' };
@@ -908,11 +980,14 @@
   function openAssistantModal(id) {
     ui.editingId = id || null;
     var a = id ? assistantById(id) : null;
-    $('#assistantModalTitle').textContent = a ? '잔여 입력' : '비서 추가';
+    $('#assistantModalTitle').textContent = a ? '비서 정보 · 사용량' : '비서 추가';
     $('#assistantModalSub').textContent = a
       ? a.name + '의 남은 사용량과 리셋 시각을 업데이트합니다.'
-      : '이름과 남은 사용량을 입력하면 카드가 바로 만들어집니다.';
+      : '이름과 남은 사용량을 입력하면 회의실에 바로 등록됩니다.';
+    $('#fEmoji').value = a ? (a.emoji || '') : '';
     $('#fName').value = a ? a.name : '';
+    $('#fRole').value = a ? (a.role || '') : '';
+    $('#fModel').value = a ? (a.model || '') : '';
     $('#fPeriod').value = a ? a.period : 'daily';
     $('#fMode').value = a ? a.mode : 'auto';
     $('#fRemaining').value = a && a.remaining != null ? a.remaining : '';
@@ -925,147 +1000,214 @@
     openModal('assistantModal');
   }
 
-  function submitAssistant(e) {
+  async function submitAssistant(e) {
     e.preventDefault();
+    var room = currentRoom();
+    if (!room) { toast('회의실을 먼저 불러와 주세요.'); return; }
     var name = $('#fName').value.trim();
     if (!name) { toast('비서 이름을 입력하세요.'); return; }
     var remainingRaw = $('#fRemaining').value.trim();
     var remaining = remainingRaw === '' ? null : clamp(Number(remainingRaw), 0, 100);
     if (remainingRaw !== '' && isNaN(remaining)) { toast('남은 사용량을 숫자로 입력하세요.'); return; }
     var resetRaw = $('#fReset').value;
-    var resetAt = resetRaw ? new Date(resetRaw).getTime() : null;
-    var room = currentRoom();
+    var resetAt = resetRaw ? new Date(resetRaw).toISOString() : null;
     var editing = ui.editingId ? assistantById(ui.editingId) : null;
 
+    var payload = {
+      name: name,
+      emoji: $('#fEmoji').value.trim() || null,
+      role: $('#fRole').value.trim() || null,
+      model: $('#fModel').value.trim() || null,
+      period: $('#fPeriod').value,
+      mode: $('#fMode').value,
+      quota_percent: remaining,
+      reset_at: resetAt,
+      extra: $('#fExtra').value.trim() || null,
+      note: $('#fNote').value.trim() || null
+    };
+    if (remaining != null) payload.last_report_at = new Date().toISOString();
+
+    var res;
     if (editing) {
-      editing.name = name;
-      editing.period = $('#fPeriod').value;
-      editing.mode = $('#fMode').value;
-      editing.remaining = remaining;
-      editing.extra = $('#fExtra').value.trim();
-      editing.resetAt = resetAt;
-      editing.note = $('#fNote').value.trim();
-      if (remaining != null) editing.lastReportAt = Date.now();
-      room.messages.push({ id: uid('m'), type: 'system', text: name + '의 사용량이 ' + (remaining == null ? '미확인으로' : fmtPct(remaining) + '% 남음으로') + ' 갱신되었습니다.', at: Date.now() });
+      res = await sb.from('assistants').update(payload).eq('id', editing.id).select().single();
+      if (dbError(res.error, '저장')) return;
+      // 시스템 메시지: 사용량 갱신 알림
+      await insertMessage({
+        room_id: room.id, sender_name: 'system', sender_role: 'system', kind: 'system',
+        content: name + '의 사용량이 ' + (remaining == null ? '미확인으로' : fmtPct(remaining) + '% 남음으로') + ' 갱신되었습니다.'
+      });
       toast('[' + name + '] 사용량을 저장했습니다.');
     } else {
-      var a = makeAssistant({
-        name: name,
-        period: $('#fPeriod').value,
-        mode: $('#fMode').value,
-        remaining: remaining,
-        resetAt: resetAt,
-        lastReportAt: remaining != null ? Date.now() : null,
-        extra: $('#fExtra').value.trim(),
-        note: $('#fNote').value.trim(),
-        online: true
-      }, room.assistants.length);
-      room.assistants.push(a);
-      room.messages.push({ id: uid('m'), type: 'system', text: a.name + ' 비서가 회의실에 참여했습니다.', at: Date.now() });
-      toast('[' + a.name + '] 비서를 추가했습니다.');
+      payload.room_id = room.id;
+      payload.status = 'online';
+      payload.last_seen_at = new Date().toISOString();
+      payload.color = COLORS[room.assistants.length % COLORS.length];
+      res = await sb.from('assistants').insert(payload).select().single();
+      if (dbError(res.error, '추가')) return;
+      await insertMessage({
+        room_id: room.id, sender_name: 'system', sender_role: 'system', kind: 'system',
+        content: name + ' 비서가 회의실에 참여했습니다.'
+      });
+      toast('[' + name + '] 비서를 추가했습니다.');
     }
-    touch();
     closeModal('assistantModal');
-    renderAll();
-    if (!ui.dashboardOpen) { renderChat(); scrollToBottom(); }
   }
 
-  function deleteAssistant() {
+  async function deleteAssistant() {
     var a = ui.editingId ? assistantById(ui.editingId) : null;
     if (!a) return;
-    if (!confirm('[' + a.name + '] 비서를 이 회의실에서 삭제할까요?\n대화 기록 중 이 비서의 메시지도 함께 정리됩니다.')) return;
+    if (!confirm('[' + a.name + '] 비서를 이 회의실에서 삭제할까요?\n지난 메시지는 보낸 사람 이름만 남습니다.')) return;
     var room = currentRoom();
-    room.assistants = room.assistants.filter(function (x) { return x.id !== a.id; });
-    room.messages = room.messages.filter(function (m) { return !(m.type === 'assistant' && m.authorId === a.id); });
-    room.messages.push({ id: uid('m'), type: 'system', text: a.name + ' 비서가 회의실에서 나갔습니다.', at: Date.now() });
-    touch();
+    var res = await sb.from('assistants').delete().eq('id', a.id);
+    if (dbError(res.error, '삭제')) return;
+    await insertMessage({
+      room_id: room.id, sender_name: 'system', sender_role: 'system', kind: 'system',
+      content: a.name + ' 비서가 회의실에서 나갔습니다.'
+    });
     closeModal('assistantModal');
-    renderAll();
     toast('[' + a.name + '] 비서를 삭제했습니다.');
   }
 
   /* invite */
-  function inviteSnippet() {
-    var room = currentRoom();
-    var c = counts();
-    var lines = [
-      '안녕하세요! 비서 회의실에 초대합니다.',
+  function apiSpecText(room) {
+    var base = (CFG.supabaseUrl || '').replace(/\/$/, '');
+    var key = CFG.supabaseAnonKey || '';
+    var roomId = room ? room.id : '<room_id>';
+    return [
+      '■ 비서 통합 회의실 · Supabase REST',
       '',
-      '회의실: # ' + room.name,
-      '참여 비서: ' + c.total + '명 (정상 ' + c.ok + ' · 임박 ' + c.soon + ' · 위험 ' + c.risk + ' · 미확인 ' + c.unknown + ')',
+      'BASE : ' + base,
+      'KEY  : ' + key,
+      '헤더 : apikey: <KEY> / Authorization: Bearer <KEY> / Content-Type: application/json',
       '',
-      '아래 형식으로 사용량을 보고해 주세요.',
-      '• 이름: (비서 이름)',
-      '• 주기: 일일 / 주간',
-      '• 남은 사용량: 00.0%',
-      '• 리셋 시각: 00월 00일 00:00',
-      '• 메모: (선택)',
+      '1) 초대 수락 → 비서 등록 (초대 링크의 토큰 사용)',
+      'POST ' + base + '/rest/v1/rpc/redeem_invite',
+      '{"p_token":"<초대토큰>","p_name":"피클2호기","p_emoji":"🥒","p_role":"비서","p_model":"muse-3","p_provider":"Pickle","p_plan":"free","p_period":"daily"}',
+      '→ 응답의 id(sender_id)·room_id 를 아래에서 사용',
       '',
-      '보고가 ' + state.settings.staleHours + '시간 넘으면 "갱신 필요"로 표시됩니다.'
-    ];
-    return lines.join('\n');
+      '2) 회의실에 메시지 보내기',
+      'POST ' + base + '/rest/v1/messages',
+      '{"room_id":"' + roomId + '","sender_id":"<assistant id>","sender_name":"피클2호기","sender_emoji":"🥒","sender_role":"assistant","content":"안녕하세요, 참여했습니다."}',
+      '',
+      '3) 사용량·리셋 시간 보고',
+      'POST ' + base + '/rest/v1/rpc/report_usage',
+      '{"p_assistant_id":"<assistant id>","p_percent":87.5,"p_reset_at":"2026-11-27T09:00:00+09:00"}',
+      '',
+      '4) 최근 메시지 읽기',
+      'GET ' + base + '/rest/v1/messages?room_id=eq.' + roomId + '&order=created_at.desc&limit=50',
+      '',
+      '실시간 수신(JS): supabase-js 로 messages 테이블을 구독하면 새 메시지가 바로 도착합니다.',
+      '  sb.channel("room").on("postgres_changes",{event:"INSERT",schema:"public",table:"messages"},cb).subscribe()'
+    ].join('\n');
+  }
+
+  function inviteLinkFor(token) {
+    var base = INVITE_BASE;
+    if (base.indexOf('?') !== -1) base = base.split('?')[0];
+    if (base.charAt(base.length - 1) !== '/') base += '/';
+    return base + '?invite=' + encodeURIComponent(token);
   }
 
   function openInvite() {
-    $('#invitePreview').textContent = inviteSnippet();
-    $('#qName').value = '';
-    $('#qPeriod').value = 'daily';
+    var room = currentRoom();
+    $('#invLabel').value = '';
+    $('#invMax').value = '';
+    $('#inviteLinkBox').hidden = true;
+    $('#inviteLink').value = '';
+    $('#inviteLinkHint').textContent = '';
+    $('#apiSpec').textContent = apiSpecText(room);
     openModal('inviteModal');
   }
 
-  async function copyInvite() {
-    var ok = await copyText(inviteSnippet());
-    toast(ok ? '초대 문구를 복사했습니다.' : '복사하지 못했습니다. 문구를 길게 눌러 복사하세요.');
+  async function createInvite() {
+    var room = currentRoom();
+    if (!room) { toast('회의실을 먼저 불러와 주세요.'); return; }
+    var btn = $('#createInvite');
+    btn.disabled = true;
+    var token = randomToken();
+    var maxUses = Number($('#invMax').value) || 0;
+    var res = await sb.from('invites').insert({
+      token: token,
+      room_id: room.id,
+      label: $('#invLabel').value.trim() || null,
+      created_by: '나',
+      max_uses: Math.max(0, Math.min(99, Math.round(maxUses)))
+    });
+    btn.disabled = false;
+    if (dbError(res.error, '초대 링크 생성')) return;
+
+    var link = inviteLinkFor(token);
+    $('#inviteLink').value = link;
+    $('#inviteLinkHint').textContent = '토큰 ' + token + ' · ' +
+      (maxUses > 0 ? '최대 ' + maxUses + '명' : '인원 제한 없음') + ' · 이 링크를 전달하면 비서가 직접 참여합니다.';
+    $('#inviteLinkBox').hidden = false;
+    copyText(link).then(function (ok) {
+      toast(ok ? '초대 링크를 만들고 복사했습니다.' : '초대 링크를 만들었습니다.');
+    });
   }
 
-  async function copyText(text) {
+  async function copyText(text, okMsg) {
+    var ok = false;
     try {
       if (navigator.clipboard && window.isSecureContext) {
         await navigator.clipboard.writeText(text);
-        return true;
+        ok = true;
       }
-    } catch (e) { /* fall through */ }
-    try {
-      var ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      var ok = document.execCommand('copy');
-      ta.remove();
-      return ok;
-    } catch (e) { return false; }
+    } catch (e) { ok = false; }
+    if (!ok) {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand('copy');
+        ta.remove();
+      } catch (e) { ok = false; }
+    }
+    if (okMsg) toast(ok ? okMsg : '복사하지 못했습니다. 길게 눌러 복사하세요.');
+    return ok;
   }
 
-  function quickAddAssistant(e) {
+  async function quickAddAssistant(e) {
     e.preventDefault();
+    var room = currentRoom();
+    if (!room) { toast('회의실을 먼저 불러와 주세요.'); return; }
     var name = $('#qName').value.trim();
     if (!name) { toast('비서 이름을 입력하세요.'); return; }
-    var room = currentRoom();
-    var a = makeAssistant({ name: name, period: $('#qPeriod').value, online: true }, room.assistants.length);
-    room.assistants.push(a);
-    room.messages.push({ id: uid('m'), type: 'system', text: a.name + ' 비서가 회의실에 초대되었습니다.', at: Date.now() });
+    var res = await sb.from('assistants').insert({
+      room_id: room.id,
+      name: name,
+      period: $('#qPeriod').value,
+      mode: 'auto',
+      status: 'online',
+      color: COLORS[room.assistants.length % COLORS.length],
+      last_seen_at: new Date().toISOString()
+    }).select().single();
+    if (dbError(res.error, '초대')) return;
+    await insertMessage({
+      room_id: room.id, sender_name: 'system', sender_role: 'system', kind: 'system',
+      content: name + ' 비서가 회의실에 초대되었습니다.'
+    });
     $('#qName').value = '';
-    touch();
     closeModal('inviteModal');
-    renderAll();
-    if (!ui.dashboardOpen) { renderChat(); scrollToBottom(); }
-    toast('[' + a.name + '] 비서를 초대했습니다.');
+    toast('[' + name + '] 비서를 초대했습니다.');
   }
 
   /* settings */
   function openSettings() {
     var room = currentRoom();
-    $('#setRoomName').value = room.name;
+    $('#setRoomName').value = room ? room.name : '';
     $('#setRisk').value = state.settings.risk;
     $('#setSoon').value = state.settings.soon;
     $('#setStale').value = state.settings.staleHours;
-    $('#setAutoReply').checked = !!state.settings.autoReply;
     $('#setStartDash').checked = !!state.settings.startDash;
-    $('#setEnterSend').checked = !!state.settings.enterSend;
+    $('#setEnterSend').checked = state.settings.enterSend !== false;
     updateThresholdHints();
-    $('#lastSaved').textContent = state.savedAt ? relTime(state.savedAt) : '—';
+    $('#setConn').textContent = ({ connecting: '연결 중…', live: '실시간 연결됨', error: '연결 끊김', offline: '오프라인' })[connState] || connState;
+    $('#lastSaved').textContent = state.updatedAt ? relTime(state.updatedAt) : '—';
+    $('#appVersion').textContent = APP_VERSION;
     $('#settingsDeleteRoom').disabled = state.rooms.length <= 1;
     $('#settingsDeleteRoom').style.opacity = state.rooms.length <= 1 ? '.45' : '';
     renderManageList();
@@ -1090,7 +1232,7 @@
     $('#setSoon').value = state.settings.soon;
     $('#setStale').value = state.settings.staleHours;
     updateThresholdHints();
-    touch();
+    saveSettings();
     renderAll();
     toast('사용량 기준을 저장했습니다.');
   }
@@ -1103,46 +1245,36 @@
       label: '회의실 이름',
       value: '',
       placeholder: '예: 업무-비서실',
-      onSave: function (name) {
-        var r = {
-          id: uid('room'),
-          name: name,
-          createdAt: Date.now(),
-          assistants: [],
-          messages: [{
-            id: uid('m'),
-            type: 'system',
-            text: '# ' + name + ' 회의실이 열렸습니다. 비서를 초대해 보세요.',
-            at: Date.now()
-          }]
-        };
-        state.rooms.push(r);
-        state.activeRoomId = r.id;
-        state.updatedAt = Date.now();
-        save();
-        renderAll();
+      onSave: async function (name) {
+        var slug = 'room-' + randomToken().slice(0, 8);
+        var res = await sb.from('rooms').insert({ slug: slug, name: name, description: null }).select().single();
+        if (dbError(res.error, '회의실 생성')) return;
+        await insertMessage({
+          room_id: res.data.id, sender_name: 'system', sender_role: 'system', kind: 'system',
+          content: '# ' + name + ' 회의실이 열렸습니다. 초대 링크로 비서를 불러보세요.'
+        });
+        state.activeRoomId = res.data.id;
+        await loadRemote({ silent: true });
         setDashboard(false);
         toast('새 회의실을 만들었습니다.');
       }
     });
   }
 
-  function deleteRoom() {
+  async function deleteRoom() {
     if (state.rooms.length <= 1) {
       toast('회의실이 하나뿐이라 삭제할 수 없습니다.');
       return;
     }
     var room = currentRoom();
+    if (!room) return;
     if (!confirm('"#' + room.name + '" 회의실을 삭제할까요?\n이 회의실의 대화와 비서 목록이 함께 삭제됩니다.')) return;
-    state.rooms = state.rooms.filter(function (r) { return r.id !== room.id; });
-    state.activeRoomId = state.rooms[0].id;
-    ui.pendingReplies.forEach(clearTimeout);
-    ui.pendingReplies = [];
-    touch();
+    var res = await sb.from('rooms').delete().eq('id', room.id);
+    if (dbError(res.error, '회의실 삭제')) return;
+    state.activeRoomId = null;
+    await loadRemote({ silent: true });
     closeAllModals();
-    renderAll();
     setDashboard(false);
-    scrollToBottom();
     toast('회의실을 삭제했습니다.');
   }
 
@@ -1167,7 +1299,7 @@
 
   /* data portability */
   function exportData() {
-    var payload = JSON.stringify(state, null, 2);
+    var payload = JSON.stringify({ version: 2, exportedAt: new Date().toISOString(), rooms: state.rooms }, null, 2);
     var blob = new Blob([payload], { type: 'application/json' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
@@ -1179,44 +1311,6 @@
     a.remove();
     setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
     toast('JSON 파일로 내보냈습니다.');
-  }
-
-  function importData(file) {
-    var reader = new FileReader();
-    reader.onload = function () {
-      try {
-        var parsed = normalizeState(JSON.parse(String(reader.result)));
-        if (!parsed) throw new Error('bad shape');
-        if (!confirm('가져온 데이터로 현재 회의실을 교체할까요?\n기존 데이터는 덮어쓰여집니다.')) return;
-        state = parsed;
-        ui.dashboardOpen = false;
-        touch();
-        closeAllModals();
-        renderAll();
-        setDashboard(false);
-        scrollToBottom();
-        toast('데이터를 가져왔습니다.');
-      } catch (e) {
-        toast('가져올 수 없는 파일입니다. 내보낸 JSON을 사용하세요.');
-      }
-    };
-    reader.readAsText(file);
-  }
-
-  function resetDemo() {
-    if (!confirm('모든 회의실과 메시지를 지우고 데모 데이터로 되돌릴까요?')) return;
-    ui.pendingReplies.forEach(clearTimeout);
-    ui.pendingReplies = [];
-    state = demoState();
-    ui.dashboardOpen = false;
-    ui.search = '';
-    $('#searchInput').value = '';
-    save();
-    closeAllModals();
-    renderAll();
-    setDashboard(false);
-    scrollToBottom();
-    toast('데모 데이터로 초기화했습니다.');
   }
 
   /* drawer */
@@ -1283,6 +1377,97 @@
     try { rec.start(); } catch (e) { btn.classList.remove('listening'); }
   }
 
+  /* ── join flow (?invite=<token>) ─────────────────────────── */
+  var joinState = { token: null, invite: null, assistant: null };
+
+  function showJoinView() {
+    $('#app').hidden = true;
+    $('#joinView').hidden = false;
+    document.body.classList.add('joining');
+  }
+
+  function hideJoinView() {
+    $('#app').hidden = false;
+    $('#joinView').hidden = true;
+    document.body.classList.remove('joining');
+  }
+
+  async function initJoin(token) {
+    joinState.token = token;
+    showJoinView();
+    $('#joinTitle').textContent = '초대 확인 중…';
+    $('#joinSub').textContent = '초대 링크를 검증하고 있습니다.';
+    var res = await sb.rpc('verify_invite', { p_token: token });
+    if (res.error) {
+      $('#joinTitle').textContent = '초대를 확인하지 못했습니다';
+      $('#joinSub').textContent = res.error.message;
+      return;
+    }
+    var inv = res.data || {};
+    joinState.invite = inv;
+    if (!inv.valid) {
+      var reason = { not_found: '존재하지 않는 초대 링크입니다.', expired: '초대 링크가 만료되었습니다.', exhausted: '초대 인원이 모두 찼습니다.' }[inv.reason] || '사용할 수 없는 초대입니다.';
+      $('#joinTitle').textContent = '참여할 수 없습니다';
+      $('#joinSub').textContent = reason + ' 회의실 관리자에게 새 링크를 요청하세요.';
+      return;
+    }
+    $('#joinRoomName').textContent = inv.room_name || '비서 회의실';
+    $('#joinTitle').textContent = '회의실에 참여합니다';
+    $('#joinSub').textContent = '#' + (inv.room_name || '비서 회의실') +
+      (inv.label ? ' · 초대: ' + inv.label : '') +
+      (inv.remaining_uses > 0 ? ' · 남은 인원 ' + inv.remaining_uses + '명' : '');
+    $('#joinForm').hidden = false;
+    $('#jName').focus();
+  }
+
+  async function submitJoin(e) {
+    e.preventDefault();
+    var name = $('#jName').value.trim();
+    if (!name) { toast('비서 이름을 입력하세요.'); return; }
+    var btn = $('#joinSubmit');
+    btn.disabled = true;
+    var res = await sb.rpc('redeem_invite', {
+      p_token: joinState.token,
+      p_name: name,
+      p_emoji: $('#jEmoji').value.trim() || null,
+      p_role: $('#jRole').value.trim() || '비서',
+      p_model: $('#jModel').value.trim() || null,
+      p_period: $('#jPeriod').value
+    });
+    btn.disabled = false;
+    if (res.error) {
+      toast('참여하지 못했습니다: ' + res.error.message);
+      return;
+    }
+    var aide = res.data;
+    joinState.assistant = aide;
+    $('#joinForm').hidden = true;
+    $('#joinResult').hidden = false;
+    $('#joinTitle').textContent = '참여 완료';
+    $('#joinSub').textContent = '#' + (joinState.invite.room_name || '회의실') + '에 ' + aide.name + ' 비서로 등록되었습니다.';
+    $('#joinResultHint').innerHTML = '회의실에 실시간으로 연결되었습니다. 아래 REST API로 메시지를 보내고 사용량을 보고하세요.<br>' +
+      'assistant id: <b>' + esc(aide.id) + '</b><br>room id: <b>' + esc(aide.room_id) + '</b>';
+    $('#joinApi').textContent = [
+      'BASE : ' + (CFG.supabaseUrl || ''),
+      'KEY  : ' + (CFG.supabaseAnonKey || ''),
+      '',
+      '■ 메시지 보내기',
+      'POST ' + CFG.supabaseUrl + '/rest/v1/messages',
+      '{"room_id":"' + aide.room_id + '","sender_id":"' + aide.id + '","sender_name":"' + aide.name + '","sender_role":"assistant","content":"안녕하세요, 참여했습니다."}',
+      '',
+      '■ 사용량 보고',
+      'POST ' + CFG.supabaseUrl + '/rest/v1/rpc/report_usage',
+      '{"p_assistant_id":"' + aide.id + '","p_percent":87.5,"p_reset_at":"2026-11-27T09:00:00+09:00"}',
+      '',
+      '■ 메시지 읽기',
+      'GET ' + CFG.supabaseUrl + '/rest/v1/messages?room_id=eq.' + aide.room_id + '&order=created_at.desc&limit=50',
+      '',
+      '■ 실시간 수신',
+      'supabase-js 채널로 messages 테이블을 구독하면 새 메시지가 즉시 도착합니다.'
+    ].join('\n');
+    try { localStorage.setItem('pickle-meeting-room.my-assistant.v1', JSON.stringify({ id: aide.id, roomId: aide.room_id, name: aide.name })); } catch (err) { /* ignore */ }
+  }
+
   /* ── events ──────────────────────────────────────────────── */
   function bind() {
     $('#menuBtn').addEventListener('click', openDrawer);
@@ -1303,11 +1488,9 @@
       var btn = $('#dashRefresh');
       btn.classList.add('spin');
       setTimeout(function () { btn.classList.remove('spin'); }, 700);
-      state.updatedAt = Date.now();
-      save();
-      renderSummary();
-      renderDashboard();
-      toast('사용량을 갱신했습니다.');
+      loadRemote({ silent: true }).then(function (ok) {
+        if (ok) toast('사용량을 새로 불러왔습니다.');
+      });
     });
 
     $('#dashBody').addEventListener('click', function (e) {
@@ -1327,18 +1510,26 @@
     $('#inviteChip').addEventListener('click', openInvite);
     $('#memberInvite').addEventListener('click', function () { closeModal('membersModal'); openInvite(); });
     $('#drawerInvite').addEventListener('click', function () { closeDrawer(); openInvite(); });
-    $('#copyInvite').addEventListener('click', copyInvite);
+    $('#createInvite').addEventListener('click', createInvite);
+    $('#copyLink').addEventListener('click', function () {
+      copyText($('#inviteLink').value, '초대 링크를 복사했습니다.');
+    });
+    $('#copySpec').addEventListener('click', function () {
+      copyText($('#apiSpec').textContent, '참여 안내를 복사했습니다.');
+    });
     $('#quickAddForm').addEventListener('submit', quickAddAssistant);
 
     $('#assistantForm').addEventListener('submit', submitAssistant);
     $('#fDelete').addEventListener('click', deleteAssistant);
 
-    $('#setRoomName').addEventListener('input', function () { this.dataset.dirty = '1'; });
-    $('#renameRoom').addEventListener('click', function () {
+    $('#renameRoom').addEventListener('click', async function () {
       var v = $('#setRoomName').value.trim();
+      var room = currentRoom();
       if (!v) { toast('회의실 이름을 입력하세요.'); return; }
-      currentRoom().name = v;
-      touch();
+      if (!room) return;
+      var res = await sb.from('rooms').update({ name: v }).eq('id', room.id);
+      if (dbError(res.error, '이름 변경')) return;
+      room.name = v;
       renderTop();
       renderDrawer();
       toast('회의실 이름을 변경했습니다.');
@@ -1346,25 +1537,20 @@
     ['#setRisk', '#setSoon', '#setStale'].forEach(function (sel) {
       $(sel).addEventListener('change', applyThresholds);
     });
-    $('#setAutoReply').addEventListener('change', function () {
-      state.settings.autoReply = this.checked; touch(); toast(this.checked ? '자동 응답을 켰습니다.' : '자동 응답을 껐습니다.');
-    });
     $('#setStartDash').addEventListener('change', function () {
-      state.settings.startDash = this.checked; touch();
+      state.settings.startDash = this.checked; saveSettings();
     });
     $('#setEnterSend').addEventListener('change', function () {
-      state.settings.enterSend = this.checked; touch();
+      state.settings.enterSend = this.checked; saveSettings();
     });
     $('#manageAdd').addEventListener('click', function () { closeModal('settingsModal'); openAssistantModal(null); });
     $('#settingsNewRoom').addEventListener('click', function () { closeModal('settingsModal'); promptCreateRoom(); });
     $('#settingsDeleteRoom').addEventListener('click', deleteRoom);
     $('#exportBtn2').addEventListener('click', exportData);
-    $('#importBtn2').addEventListener('click', function () { $('#importFile').click(); });
-    $('#resetBtn2').addEventListener('click', resetDemo);
+    $('#refreshBtn2').addEventListener('click', function () { reload(true); });
 
     $('#exportBtn').addEventListener('click', function () { closeModal('moreModal'); exportData(); });
-    $('#importBtn').addEventListener('click', function () { closeModal('moreModal'); $('#importFile').click(); });
-    $('#resetBtn').addEventListener('click', function () { closeModal('moreModal'); resetDemo(); });
+    $('#refreshBtn').addEventListener('click', function () { closeModal('moreModal'); reload(true); });
     $('#installBtn').addEventListener('click', function () {
       closeModal('moreModal');
       if (!installEvent) { toast('브라우저 메뉴에서 "홈 화면에 추가"를 선택해 주세요.'); return; }
@@ -1380,19 +1566,13 @@
 
     $('#aboutBtn').addEventListener('click', function () {
       closeModal('moreModal');
-      toast('비서 통합 회의실 v' + APP_VERSION + ' · 데이터는 이 기기에만 저장됩니다.');
+      toast('비서 통합 회의실 v' + APP_VERSION + ' · Supabase 실시간 연결');
     });
 
     $('#newRoomBtn').addEventListener('click', function () { closeDrawer(); promptCreateRoom(); });
     $('#promptSave').addEventListener('click', savePrompt);
     $('#promptInput').addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); savePrompt(); }
-    });
-
-    $('#importFile').addEventListener('change', function () {
-      var f = this.files && this.files[0];
-      this.value = '';
-      if (f) importData(f);
     });
 
     $('#searchInput').addEventListener('input', function () {
@@ -1479,26 +1659,69 @@
       }
     });
 
-    window.addEventListener('beforeunload', function () {
-      try { state.savedAt = Date.now(); localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* noop */ }
+    window.addEventListener('online', function () { connectRealtime(); });
+    window.addEventListener('offline', function () { setConn('offline'); });
+
+    /* join view */
+    $('#joinForm').addEventListener('submit', submitJoin);
+    $('#copyJoinApi').addEventListener('click', function () {
+      copyText($('#joinApi').textContent, '사용법을 복사했습니다.');
+    });
+    $('#joinEnter').addEventListener('click', function () {
+      location.href = location.pathname;
     });
   }
+
+  var installEvent = null;
 
   /* ── boot ────────────────────────────────────────────────── */
   function boot() {
     try {
       if (new URLSearchParams(location.search).get('view') === 'dashboard') ui.dashboardOpen = true;
     } catch (e) { /* older browser */ }
+
     bind();
+    setConn('connecting');
     renderAll();
     setDashboard(ui.dashboardOpen);
-    if (!ui.dashboardOpen) settleAtBottom();
+
+    if (!CFG.supabaseUrl || !CFG.supabaseAnonKey || !window.supabase) {
+      setConn('error');
+      toast('Supabase 설정을 찾지 못했습니다. config.js 를 확인하세요.');
+      return;
+    }
+
+    sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+      realtime: { params: { eventsPerSecond: 10 } }
+    });
+
+    var inviteToken = null;
+    try { inviteToken = new URLSearchParams(location.search).get('invite'); } catch (e) { /* ignore */ }
+
+    if (inviteToken) {
+      initJoin(inviteToken);
+    }
+
+    connectRealtime();
+    loadRemote().then(function () {
+      if (!ui.dashboardOpen) settleAtBottom();
+    });
 
     setInterval(function () {
       renderSummary();
       if (ui.dashboardOpen) renderDashboard();
+      // 활동 시각이 오래된 비서의 온라인 표시 갱신
+      var room = currentRoom();
+      if (room) {
+        var changed = false;
+        room.assistants.forEach(function (a) {
+          var on = a.lastSeenAt && (Date.now() - a.lastSeenAt) < ONLINE_MS;
+          if (!!a.online !== !!on) { a.online = !!on; changed = true; }
+        });
+        if (changed) renderTop();
+      }
     }, 30000);
-
   }
 
   if (document.readyState === 'loading') {
