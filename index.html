@@ -10,10 +10,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="비서 회의실" />
   <title># 비서-통합-회의실</title>
-  <link rel="manifest" href="manifest.webmanifest?v=1.4.1" />
+  <link rel="manifest" href="manifest.webmanifest?v=1.4.2" />
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="styles.css?v=1.4.1" />
+  <link rel="stylesheet" href="styles.css?v=1.4.2" />
 </head>
 <body>
   <div class="app" id="app">
@@ -123,15 +123,17 @@
               </button>
             </div>
             <div class="q-chips" id="quotaChips"></div>
-            <p class="q-explain">버튼을 누르면 <b>Supabase Edge Function</b>이 각 API를 직접 실측해 갱신합니다 (피클 토큰 미소모). 브라우저는 API 키를 갖지 않으며, 숫자 옆 시각은 <b>마지막 실측 시각</b>입니다. 무료 한도를 지키려고 45초 안의 재요청은 실측 없이 지난 결과를 보여주고, 리셋 전 '한도 초과' 제공자와 Gemini 키는 재호출을 생략합니다.</p>
+            <p class="q-notion" id="quotaNotion" hidden></p>
+            <p class="q-explain">버튼을 누르면 <b>Supabase Edge Function</b>이 각 API를 직접 실측해 갱신합니다 (피클 토큰 미소모). 브라우저는 API 키를 갖지 않으며, 숫자 옆 시각은 <b>마지막 실측 시각</b>입니다. 무료 한도를 지키려고 45초 안의 재요청은 실측 없이 지난 결과를 보여주고, 리셋 전 '한도 초과' 제공자와 Gemini 키는 재호출을 생략합니다. 또 노션 <b>03 - 제작 기록</b>에 남은 외부 제작 기록(쇼츠를 만든 다른 비서들의 AI 사용)을 함께 읽어 합산합니다.</p>
             <p class="q-legend"><span class="q-tag">예상</span><span><b>예상</b> 표시가 붙은 %는 API가 숫자를 주지 않아 <b>공개된 무료 한도 − 이번 기간 누적 사용량</b>으로 계산한 값입니다 (줄무늬 게이지). Gemini 1일 10회 · Cohere 월 1,000회 · Requesty 1일 200회 · EXAONE 1일 100회 · Cloudflare 1일 10,000 Neuron · Cloud TTS 월 100만 자 · Upstage $10 크레딧. 표시가 없는 %는 OpenRouter·Groq·Pixabay가 응답으로 직접 준 실측값입니다.</span></p>
+            <p class="q-legend"><span class="q-tag notion">노션 +N</span><span><b>노션 +N</b> 은 노션 제작 기록에 적힌 <b>외부 사용분</b>입니다. 기록 1건(편)에서 이름이 나온 API마다 1회, Cloud TTS는 내레이션 글자 수로 셉니다(실제보다 적을 수 있는 하한 추정). 잔여 %를 API가 직접 알려주는 OpenRouter·Groq·Pixabay·Z.AI는 이미 반영돼 있어 합산하지 않습니다.</span></p>
           </div>
           <div class="q-grid" id="quotaGrid"></div>
           <section class="q-runs">
             <div class="q-runs-head">최근 실측 기록 <span id="quotaRunCount"></span></div>
             <div class="q-run-list" id="quotaRuns"></div>
           </section>
-          <p class="q-note">잔여 %는 OpenRouter·Groq·Pixabay처럼 API가 직접 돌려준 값과, 기준 무료 한도에서 누적 사용량을 뺀 <b>예상</b>(줄무늬)으로 나뉩니다. 사용량은 이 방의 실측이 성공(HTTP 200)할 때마다 1회씩 누적되며, 기간(일/월)이 바뀌면 0부터 다시 셉니다. 한도가 공개되지 않은 제공자는 % 없이 상태만 표시합니다. 무료 한도는 서비스 정책에 따라 바뀔 수 있습니다.</p>
+          <p class="q-note">잔여 %는 OpenRouter·Groq·Pixabay처럼 API가 직접 돌려준 값과, 기준 무료 한도에서 누적 사용량을 뺀 <b>예상</b>(줄무늬)으로 나뉩니다. 사용량은 이 방의 실측이 성공(HTTP 200)할 때마다 1회씩 누적되고, 노션 제작 기록의 외부 사용분도 같은 누적에 합산됩니다. 기간(일/월)이 바뀌면 0부터 다시 셉니다. 한도가 공개되지 않은 제공자는 % 없이 상태만 표시합니다. 무료 한도는 서비스 정책에 따라 바뀔 수 있습니다.</p>
         </div>
       </section>
     </main>
@@ -405,7 +407,7 @@
             <button class="btn ghost" id="refreshBtn2">서버에서 새로고침</button>
           </div>
         </section>
-        <p class="app-version">비서 통합 회의실 · v<span id="appVersion">1.4.1</span> · Supabase 실시간</p>
+        <p class="app-version">비서 통합 회의실 · v<span id="appVersion">1.4.2</span> · Supabase 실시간</p>
       </div>
     </div>
   </div>
@@ -536,8 +538,8 @@
       });
     })();
   </script>
-  <script src="config.js?v=1.4.1"></script>
+  <script src="config.js?v=1.4.2"></script>
   <script src="vendor/supabase.js"></script>
-  <script src="app.js?v=1.4.1"></script>
+  <script src="app.js?v=1.4.2"></script>
 </body>
 </html>

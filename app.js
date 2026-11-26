@@ -243,6 +243,10 @@
       remainingPct: row.remaining_pct == null ? null : Number(row.remaining_pct),
       pctSource: (row.detail && row.detail.pct_source) || null,
       usage: (row.detail && row.detail.usage) || null,
+      notionSync: (row.detail && row.detail.notion_sync) || null,
+      notionUsed: (row.detail && row.detail.usage && row.detail.usage.notion_used != null)
+        ? Number(row.detail.usage.notion_used) : 0,
+      notionUnit: (row.detail && row.detail.usage && row.detail.usage.unit) || '회',
       remainingText: row.remaining_text || '',
       limitText: row.limit_text || '',
       usedText: row.used_text || '',
@@ -846,10 +850,17 @@
     var st = q.status;
     var pct = q.remainingPct;
     var est = q.pctSource === 'estimated';
+    var notionTag = '';
+    if (q.notionSync && q.notionSync.ok !== false && q.notionUsed > 0) {
+      var unit = q.notionUnit === '자' ? '자' : '회';
+      notionTag = '<span class="q-tag notion" title="노션 03 - 제작 기록에 적힌 외부 사용분(하한 추정)을 합산한 값입니다">노션 +' +
+        esc(Number(q.notionUsed).toLocaleString('ko-KR')) + unit + '</span>';
+    }
     var value;
     if (pct != null) {
       value = '<span class="q-value">' + fmtPct(pct) + '<small>%</small></span><span class="q-value-sub">남음</span>' +
-        (est ? '<span class="q-tag" title="API가 숫자를 주지 않아 기준 무료 한도에서 누적 사용량을 뺀 예상치입니다">예상</span>' : '');
+        (est ? '<span class="q-tag" title="API가 숫자를 주지 않아 기준 무료 한도에서 누적 사용량을 뺀 예상치입니다">예상</span>' : '') +
+        notionTag;
     } else if (st === 'ok') {
       value = '<span class="q-value word ok">사용 가능</span>';
     } else if (st === 'limited') {
@@ -866,6 +877,12 @@
     if (q.limitText) meta += '<span class="q-line muted">' + (est ? '예상 기준 · ' : '') + esc(q.limitText) + '</span>';
     if (q.resetAt && q.resetAt > Date.now()) meta += '<span class="q-line accent">' + esc(relUntil(q.resetAt)) + '</span>';
     if (q.usedText) meta += '<span class="q-line muted">' + esc(q.usedText) + '</span>';
+    if (q.notionSync && q.notionSync.ok !== false && q.notionUsed > 0 && q.notionSync.episodes_list && q.notionSync.episodes_list.length) {
+      meta += '<span class="q-line muted">노션 기록 ' + esc(q.notionSync.episodes_list.join('·')) + ' 합산</span>';
+    }
+    if (q.notionSync && q.notionSync.hints && q.notionSync.hints.length) {
+      meta += '<span class="q-line muted">노션: ' + esc(q.notionSync.hints[0]) + '</span>';
+    }
     if (q.notes) meta += '<span class="q-line warn">' + esc(q.notes) + '</span>';
     return '<article class="q-card" data-state="' + st + '"' + (est ? ' data-src="est"' : '') + '>' +
       '<div class="q-top">' +
@@ -880,6 +897,25 @@
       '<div class="q-foot"><span>확인 ' + (q.checkedAt ? esc(relTime(q.checkedAt)) : '—') + '</span>' +
       '<span>' + (q.httpStatus ? 'HTTP ' + q.httpStatus : '') + '</span></div>' +
       '</article>';
+  }
+
+  function notionSummary() {
+    var seen = false, ok = false, eps = {}, total = 0, err = null, fresh = null;
+    state.quotas.forEach(function (q) {
+      if (!q.notionSync) return;
+      seen = true;
+      if (q.notionSync.ok !== false) ok = true;
+      else if (q.notionSync.error && !err) err = String(q.notionSync.error);
+      (q.notionSync.episodes_list || []).forEach(function (e) { eps[e] = 1; });
+      if (q.notionSync.episodes) total = Math.max(total, Number(q.notionSync.episodes) || 0);
+      if (q.notionSync.fetched_at && !fresh) fresh = Date.parse(q.notionSync.fetched_at) || null;
+    });
+    var list = Object.keys(eps).sort(function (a, b) {
+      var ca = a.replace(/\d+/g, ''), cb = b.replace(/\d+/g, '');
+      if (ca !== cb) return ca < cb ? -1 : 1;
+      return Number(a.replace(/\D+/g, '')) - Number(b.replace(/\D+/g, ''));
+    });
+    return { seen: seen, ok: ok, episodes: list, total: total, error: err, fetchedAt: fresh };
   }
 
   function renderQuota() {
@@ -897,6 +933,25 @@
     }
     var chips = $('#quotaChips');
     if (chips) chips.innerHTML = quotaChipsHTML(c);
+    var notionEl = $('#quotaNotion');
+    if (notionEl) {
+      var ns = notionSummary();
+      if (!ns.seen) {
+        notionEl.hidden = true;
+        notionEl.innerHTML = '';
+      } else if (ns.ok) {
+        var shown = ns.episodes.slice(0, 8).join('·');
+        var more = ns.episodes.length > 8 ? ' 외 ' + (ns.episodes.length - 8) + '건' : '';
+        notionEl.hidden = false;
+        notionEl.innerHTML = '<b>노션 03 - 제작 기록 반영됨</b>' +
+          (ns.episodes.length ? ' · 외부 기록 ' + ns.episodes.length + '건 합산 (' + esc(shown) + esc(more) + ')' : '') +
+          (ns.fetchedAt ? ' · ' + esc(relTime(ns.fetchedAt)) : '');
+      } else {
+        notionEl.hidden = false;
+        notionEl.innerHTML = '<b>노션 기록 조회 실패</b> · 직전에 합산한 값을 그대로 둡니다' +
+          (ns.error ? ' (' + esc(ns.error) + ')' : '');
+      }
+    }
     var grid = $('#quotaGrid');
     if (grid) {
       grid.innerHTML = state.quotas.length
@@ -1832,10 +1887,13 @@
             toast('지난 실측 결과입니다 · ' + wait);
           } else {
             var skippedN = (data.skipped || []).length;
+            var notionBit = '';
+            if (data.notion && data.notion.ok) notionBit = ' · 노션 기록 반영';
+            else if (data.notion && data.notion.error) notionBit = ' · 노션 조회 실패';
             toast('실측 완료 · 정상 ' + (data.ok_count || 0) + '곳' +
               (data.limited_count ? ' · 한도초과 ' + data.limited_count + '곳' : '') +
               (data.error_count ? ' · 오류 ' + data.error_count + '곳' : '') +
-              (skippedN ? ' (' + skippedN + '곳은 재호출 생략)' : ''));
+              (skippedN ? ' (' + skippedN + '곳은 재호출 생략)' : '') + notionBit);
           }
         } catch (err) {
           toast('실시간 실측 실패: ' + ((err && err.message) || err));

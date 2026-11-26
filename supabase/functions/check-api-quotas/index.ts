@@ -148,9 +148,11 @@ function nextBoundary(b: Basis, ms: number): number | null {
 
 const fmtCount = (n: number) => Math.round(n).toLocaleString("en-US");
 
-// 이번 기간 누적 사용량 = 직전 기록(같은 기간) + 이번 실측 소모량.
+// 이번 기간 누적 사용량 = 직전 기록(같은 기간) + 이번 실측 소모량 + 노션 기록 기반 외부 사용분.
 // 기간이 바뀌었으면 0 에서 시작한다(리셋). 응답이 429 면 0% 로 고정.
-function applyEstimate(row: Dict, prev: Dict | null, freshOk: boolean): void {
+// probe_used(우리 함수가 직접 부른 횟수)는 누적하고, notion_used(노션 기록 기반)는 매 실행
+// 노션에서 다시 세므로 누적하지 않는다. 노션 조회가 실패하면 직전 노션 값을 그대로 유지한다.
+function applyEstimate(row: Dict, prev: Dict | null, freshOk: boolean, notion: NotionSync | null): void {
   const b = BASIS[row.provider];
   if (!b) return;
   const now = nowMs();
@@ -159,14 +161,27 @@ function applyEstimate(row: Dict, prev: Dict | null, freshOk: boolean): void {
   const prevUsage = prevDetail && prevDetail.usage && typeof prevDetail.usage === "object"
     ? prevDetail.usage
     : null;
-  let used = prevUsage && prevUsage.period_key === key ? Number(prevUsage.used) || 0 : 0;
-  if (freshOk && row.status === "ok") used += b.cost;
+  const samePeriod = !!(prevUsage && prevUsage.period_key === key);
+  let probeUsed = 0;
+  if (samePeriod && prevUsage) {
+    if (prevUsage.probe_used != null) probeUsed = Number(prevUsage.probe_used) || 0;
+    else probeUsed = Math.max(0, (Number(prevUsage.used) || 0) - (Number(prevUsage.notion_used) || 0));
+  }
+  if (freshOk && row.status === "ok") probeUsed += b.cost;
+  const hit = notion && notion.ok ? notion.byProvider[row.provider] : null;
+  let notionUsed = 0;
+  if (notion && notion.ok) notionUsed = hit ? Number(hit.used) || 0 : 0;
+  else if (samePeriod && prevUsage && prevUsage.notion_used != null) notionUsed = Number(prevUsage.notion_used) || 0;
+  let used = probeUsed + notionUsed;
   // 429 가 '일일/월 한도 소진'이면 0% 로 고정하지만, 동시 요청·분당 속도 제한처럼
   // 잠시 뒤 풀리는 429 는 누적 사용량 그대로 둔다(0% 로 표시하면 사실과 다르다).
   const transientLimit = row.status === "limited" &&
     (/동시 요청 초과|요청 속도 제한/.test(`${row.notes || ""} ${(prev && prev.notes) || ""}`) ||
       (prevDetail && prevDetail.limit_kind === "transient"));
-  if (row.status === "limited" && !transientLimit) used = Math.max(used, b.limit);
+  if (row.status === "limited" && !transientLimit) {
+    used = Math.max(used, b.limit);
+    probeUsed = Math.max(0, used - notionUsed); // 한도 소진은 실측 쪽 소모로 본다(usage 표기 일관성)
+  }
   used = Math.max(0, Math.min(b.limit, used));
 
   const pct = used <= 0 ? 100 : Math.max(0, Math.min(100, Math.floor((1 - used / b.limit) * 1000) / 10));
@@ -179,6 +194,8 @@ function applyEstimate(row: Dict, prev: Dict | null, freshOk: boolean): void {
     limit_kind: row.status === "limited" ? (transientLimit ? "transient" : "quota") : null,
     usage: {
       period_key: key,
+      probe_used: probeUsed,
+      notion_used: notionUsed,
       used,
       limit: b.limit,
       unit: b.unit,
@@ -187,6 +204,20 @@ function applyEstimate(row: Dict, prev: Dict | null, freshOk: boolean): void {
       cost_per_probe: freshOk ? b.cost : null,
       updated_at: iso(now),
     },
+    notion_sync: notion
+      ? {
+        ok: notion.ok,
+        page_id: notion.page_id,
+        fetched_at: notion.fetched_at,
+        episodes: notion.episodes,
+        items: hit ? hit.items : 0,
+        episodes_list: hit ? hit.episodes.slice(0, 8) : [],
+        used: notionUsed,
+        unit: b.unit,
+        hints: String(row.provider).startsWith("gemini") ? notion.hints.slice(0, 2) : [],
+        error: notion.ok ? null : notion.error,
+      }
+      : undefined,
   };
   row.limit_text = `${b.limitLabel} · ${b.resetLabel}`;
 
@@ -418,6 +449,216 @@ const KEYCFG = {
 };
 
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
+
+// ────────────────── 노션 '03 - 제작 기록' 외부 사용 합산 ──────────────────
+// 쇼츠를 만드는 다른 피클들이 노션 '03 - 제작 기록'에 남기는 제작·검수 기록을 읽어,
+// 그 기록에 적힌 외부 AI 사용(TTS·LLM 호출)을 '예상 %' 계산에 합산한다.
+// · API 가 잔여 %·한도를 직접 돌려주는 제공자(OpenRouter·Groq·Pixabay·Z.AI)는 그 숫자에
+//   외부 사용이 이미 반영되므로 합산하지 않는다. BASIS 가 있는 제공자만 합산 대상이다.
+// · 기록 1건(에피소드)에서 이름이 나온 제공자마다 1회(Cloud TTS 는 내레이션 글자 수)로 센다.
+//   같은 편이 제작 heading 과 기획 하위 페이지에 중복으로 있어도 'JP14' 같은 편 키로 한 번만 센다.
+//   → 실제 호출 수보다 적을 수 있는 '하한' 추정이며, 화면에도 '노션 N건 합산'으로만 표시한다.
+// · 노션 조회가 실패해도 실측은 그대로 진행한다(try/catch). 이때는 직전 노션 합산값을 유지한다.
+const NOTION_KEY = ENV("NOTION_API_KEY");
+const NOTION_VERSION = "2022-06-28";
+const NOTION_LOG_PAGE = Deno.env.get("NOTION_LOG_PAGE_ID") || "42184f0c-8f19-8195-8eed-f4089917da7a";
+const NOTION_TOP_PAGES = 4; // 상위 페이지 블록 100개 × 4 = 400개까지 훑는다
+const NOTION_CHILD_PAGES = 12; // 본문을 읽을 하위 기획 페이지 수 상한
+const NOTION_GAP_MS = 150; // Notion 3 req/s 제한 회피
+const NOTION_DEFAULT_CHARS = 200; // 내레이션 글자 수를 못 찾았을 때 Cloud TTS 1편 기본값
+
+const NOTION_PATTERNS: Record<string, RegExp> = {
+  openrouter: /openrouter/i,
+  groq: /\bgroq\b/i,
+  cohere: /\bcohere\b/i,
+  upstage: /upstage|solar-(?:pro|mini)/i,
+  zai: /\bz\.?ai\b|glm-\d/i,
+  exaone: /\bexaone\b/i,
+  requesty: /\brequesty\b/i,
+  cloudflare: /\bcloudflare\b/i,
+  pixabay: /\bpixabay\b/i,
+  gemini: /\bgemini\b/i,
+};
+
+const EPISODE_RE = /(KR|JP)\s*0*(\d{1,3})\s*편/i;
+
+function episodeKey(title: string): string {
+  const m = EPISODE_RE.exec(title || "");
+  return m ? `${m[1].toUpperCase()}${Number(m[2])}` : "";
+}
+
+function notionChars(text: string): number {
+  const a = /내레이션[^\n]{0,40}?(\d+)\s*자/.exec(text);
+  if (a) return Number(a[1]) || NOTION_DEFAULT_CHARS;
+  const b = /대본[^\n]{0,24}?\(?(\d{2,4})\s*자/.exec(text);
+  if (b) return Number(b[1]) || NOTION_DEFAULT_CHARS;
+  return NOTION_DEFAULT_CHARS;
+}
+
+function notionBlockText(b: Dict): string {
+  const t = b && b.type;
+  if (!t) return "";
+  if (t === "child_page" || t === "child_database") return String(b[t]?.title || "");
+  const rt = b[t]?.rich_text;
+  return Array.isArray(rt) ? rt.map((x: Dict) => (x && x.plain_text) || "").join("") : "";
+}
+
+const notionSleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
+async function notionGet(path: string): Promise<Dict> {
+  const r = await call(`https://api.notion.com/v1/${path}`, {
+    headers: { Authorization: "Bearer " + NOTION_KEY, "Notion-Version": NOTION_VERSION },
+  });
+  if (r.status === 401 || r.status === 403) {
+    throw new Error(`노션 인증 실패(HTTP ${r.status}) · NOTION_API_KEY 권한 확인 필요`);
+  }
+  if (!r.ok) throw new Error(`노션 조회 실패(HTTP ${r.status}) ${errorNote(r)}`.slice(0, 200));
+  return r.json || {};
+}
+
+async function notionBlocks(blockId: string, maxPages: number): Promise<Dict[]> {
+  const out: Dict[] = [];
+  let cursor: string | null = null;
+  for (let i = 0; i < maxPages; i++) {
+    const qs = `page_size=100${cursor ? `&start_cursor=${encodeURIComponent(cursor)}` : ""}`;
+    const data = await notionGet(`blocks/${String(blockId).replace(/-/g, "")}/children?${qs}`);
+    const results = Array.isArray(data.results) ? data.results : [];
+    out.push(...results);
+    if (!data.has_more || !data.next_cursor) break;
+    cursor = String(data.next_cursor);
+    await notionSleep(NOTION_GAP_MS);
+  }
+  return out;
+}
+
+type NotionEpisode = { key: string; id: string; title: string; created: string; text: string; page: boolean };
+type NotionHit = { used: number; items: number; episodes: string[] };
+type NotionSync = {
+  ok: boolean;
+  page_id: string;
+  fetched_at: string;
+  blocks: number;
+  episodes: number;
+  byProvider: Record<string, NotionHit>;
+  hints: string[];
+  error?: string;
+};
+
+async function collectNotionEpisodes(): Promise<{ episodes: NotionEpisode[]; blocks: number }> {
+  const top = await notionBlocks(NOTION_LOG_PAGE, NOTION_TOP_PAGES);
+  const raw: NotionEpisode[] = [];
+  let cur: NotionEpisode | null = null;
+  for (const b of top) {
+    if (!b || !b.type) continue;
+    if (b.type === "child_page") {
+      const title = notionBlockText(b);
+      raw.push({ key: episodeKey(title) || String(b.id), id: String(b.id), title, created: String(b.created_time), text: "", page: true });
+      cur = null;
+      continue;
+    }
+    if (b.type === "heading_1" || b.type === "heading_2") {
+      cur = null;
+      if (b.type === "heading_2") {
+        const title = notionBlockText(b);
+        const key = episodeKey(title);
+        if (key) {
+          cur = { key, id: String(b.id), title, created: String(b.created_time), text: "", page: false };
+          raw.push(cur);
+        }
+      }
+      continue;
+    }
+    if (cur) cur.text += notionBlockText(b) + "\n";
+  }
+
+  // 하위 기획 페이지는 본문(제작·검수 기록)을 따로 읽는다(최근 것부터, 상한까지)
+  const pages = raw
+    .filter((e) => e.page && /^[A-Z]+\d+$/.test(e.key))
+    .sort((a, b) => Date.parse(b.created) - Date.parse(a.created))
+    .slice(0, NOTION_CHILD_PAGES);
+  for (const ep of pages) {
+    await notionSleep(NOTION_GAP_MS);
+    const kids = await notionBlocks(ep.id, 1);
+    ep.text += kids.map(notionBlockText).join("\n");
+  }
+
+  // 같은 편의 기획 페이지 + 제작 heading 은 한 번만 센다
+  const merged: Record<string, NotionEpisode> = {};
+  for (const ep of raw) {
+    const prev = merged[ep.key];
+    if (!prev) {
+      merged[ep.key] = { ...ep };
+      continue;
+    }
+    const longer = ep.text.length > prev.text.length ? ep : prev;
+    const other = longer === ep ? prev : ep;
+    const createdFirst = Date.parse(prev.created) <= Date.parse(ep.created) ? prev.created : ep.created;
+    merged[ep.key] = { ...longer, text: longer.text + "\n" + other.text, created: createdFirst };
+  }
+  return { episodes: Object.values(merged), blocks: top.length };
+}
+
+function notionUsage(episodes: NotionEpisode[], now: number): { byProvider: Record<string, NotionHit>; hints: string[] } {
+  const byProvider: Record<string, NotionHit> = {};
+  const hints: string[] = [];
+  for (const ep of episodes) {
+    const created = Date.parse(ep.created);
+    if (!Number.isFinite(created)) continue;
+    const text = ep.text || "";
+    if (!text.trim()) continue;
+    const seen: Record<string, number> = {};
+    for (const [provider, re] of Object.entries(NOTION_PATTERNS)) {
+      const b = BASIS[provider];
+      if (!b) continue; // 실측 % 제공자는 대상 아님
+      if (!re.test(text)) continue;
+      if (periodKey(b, created) !== periodKey(b, now)) continue; // 그 제공자의 이번 기간 기록만
+      seen[provider] = 1;
+    }
+    if (BASIS.gcloud_tts && /google cloud tts|chirp ?3|chirp3/i.test(text) &&
+      periodKey(BASIS.gcloud_tts, created) === periodKey(BASIS.gcloud_tts, now)) {
+      seen.gcloud_tts = notionChars(text);
+    }
+    if (/gemini[^\n]{0,80}(429|일일\s*한도)/i.test(text)) {
+      hints.push(`${ep.key} 기록에 Gemini TTS 일일 한도(429) 언급`);
+    }
+    for (const [provider, value] of Object.entries(seen)) {
+      const hit = byProvider[provider] || (byProvider[provider] = { used: 0, items: 0, episodes: [] });
+      hit.used += value;
+      hit.items += 1;
+      if (!hit.episodes.includes(ep.key)) hit.episodes.push(ep.key);
+    }
+  }
+  return { byProvider, hints: hints.slice(0, 4) };
+}
+
+async function notionSync(): Promise<NotionSync | null> {
+  if (!NOTION_KEY) return null;
+  const fetchedAt = iso(nowMs());
+  try {
+    const { episodes, blocks } = await collectNotionEpisodes();
+    const agg = notionUsage(episodes, nowMs());
+    return {
+      ok: true,
+      page_id: NOTION_LOG_PAGE,
+      fetched_at: fetchedAt,
+      blocks,
+      episodes: episodes.length,
+      byProvider: agg.byProvider,
+      hints: agg.hints,
+    };
+  } catch (exc) {
+    return {
+      ok: false,
+      page_id: NOTION_LOG_PAGE,
+      fetched_at: fetchedAt,
+      blocks: 0,
+      episodes: 0,
+      byProvider: {},
+      hints: [],
+      error: scrub(String((exc as Error)?.message || exc)).slice(0, 200),
+    };
+  }
+}
 
 // ────────────────────────────── probes ──────────────────────────────
 async function probeOpenRouter(): Promise<Dict> {
@@ -1068,6 +1309,7 @@ function compact(rows: Dict[]): Dict[] {
       http_status: r.http_status,
       remaining_pct: r.remaining_pct,
       pct_source: (r.detail && r.detail.pct_source) || null,
+      notion_used: r.detail && r.detail.usage ? r.detail.usage.notion_used ?? null : null,
       remaining_text: r.remaining_text,
       limit_text: r.limit_text,
       reset_at: r.reset_at,
@@ -1179,13 +1421,15 @@ async function runProbes(): Promise<Dict> {
   // ── 기준 한도 기반 예상 잔여 % 적용 ──
   // 한도가 공개된 제공자는 누적 사용량을 차감해 계산하고, 그 밖의 제공자는
   // API가 준 실측 %(api) 또는 % 없음(none)으로 표시 방식을 남긴다.
+  // 노션 '03 - 제작 기록'의 외부 사용분은 여기서 한 번만 읽어 합산한다(실패해도 실측은 진행).
+  const notion = await notionSync();
   const prevByName: Record<string, Dict> = {};
   for (const p of prevRows) if (p && p.provider) prevByName[p.provider] = p;
   for (const row of rows) {
     const freshOk = row.__fresh_ok === true;
     delete row.__fresh_ok;
     if (BASIS[row.provider]) {
-      applyEstimate(row, prevByName[row.provider] || null, freshOk);
+      applyEstimate(row, prevByName[row.provider] || null, freshOk, notion);
     } else {
       const d = row.detail && typeof row.detail === "object" && !Array.isArray(row.detail) ? row.detail : {};
       d.pct_source = row.remaining_pct == null ? "none" : "api";
@@ -1225,6 +1469,17 @@ async function runProbes(): Promise<Dict> {
     measured: jobs.length,
     skipped,
     db_role: preferredWriteKey === SB_ANON ? "anon" : "service_role",
+    notion: notion
+      ? {
+        ok: notion.ok,
+        page_id: notion.page_id,
+        episodes: notion.episodes,
+        blocks: notion.blocks,
+        providers: Object.fromEntries(Object.entries(notion.byProvider).map(([k, v]) => [k, v.used])),
+        hints: notion.hints,
+        error: notion.ok ? null : notion.error,
+      }
+      : { ok: false, error: "NOTION_API_KEY 미설정" },
     providers: compact(rows),
   };
 }
@@ -1254,6 +1509,14 @@ Deno.serve(async (req: Request) => {
       if (!Number.isNaN(lastMs) && elapsed >= 0 && elapsed < MIN_INTERVAL_SEC) {
         const rows = await readCurrent();
         const counts = summarize(rows);
+        let notionInfo: Dict = { ok: false };
+        for (const r of rows) {
+          const ns = r.detail && r.detail.notion_sync;
+          if (ns) {
+            notionInfo = { ok: !!ns.ok, page_id: ns.page_id, episodes: ns.episodes, error: ns.error || null };
+            break;
+          }
+        }
         return jsonResponse(
           {
             ok: true,
@@ -1270,6 +1533,7 @@ Deno.serve(async (req: Request) => {
             limited_count: counts.limited,
             error_count: counts.error,
             unknown_count: counts.unknown,
+            notion: notionInfo,
             providers: compact(rows),
           },
           200,
