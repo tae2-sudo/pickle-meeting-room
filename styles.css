@@ -1251,8 +1251,25 @@ body.joining { background: #e9ebf0; }
 .q-value.word.limited { color: var(--red-ink); }
 .q-value.word.error { color: var(--amber-ink); }
 .q-value-sub { font-size: 11px; font-weight: 700; color: var(--muted); }
+.q-tag {
+  flex: 0 0 auto; align-self: center; margin-left: 3px;
+  font-size: 9.5px; font-weight: 800; letter-spacing: -.1px;
+  padding: 1.5px 5px; border-radius: 999px;
+  background: #eef2ff; color: #4338ca; border: 1px solid #dfe4ff;
+}
 
 .q-card .bar { height: 7px; }
+/* 기준 한도에서 계산한 예상치의 게이지는 줄무늬로 실측과 구분한다 */
+.bar[data-src="est"] > i {
+  background-image: linear-gradient(45deg, rgba(255, 255, 255, .45) 25%, transparent 25%, transparent 50%,
+    rgba(255, 255, 255, .45) 50%, rgba(255, 255, 255, .45) 75%, transparent 75%, transparent);
+  background-size: 8px 8px;
+}
+.q-legend {
+  display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap;
+  margin: 8px 0 0; font-size: 11px; line-height: 1.55; color: var(--muted);
+}
+.q-legend .q-tag { margin-left: 0; }
 .q-meta { display: flex; flex-direction: column; gap: 2px; }
 .q-line { font-size: 11.5px; font-weight: 700; line-height: 1.35; color: #4b5563; }
 .q-line.muted { font-weight: 600; color: var(--muted); }

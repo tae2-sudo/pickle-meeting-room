@@ -34,6 +34,167 @@ const THROTTLE_HOURS: Record<string, number> = {
   gemini_free_4: 6,
 };
 
+// ────────────────────────────── 기준 한도(예상 %) ──────────────────────────────
+// API 응답이 잔여 %를 직접 주지 않는 제공자는, 공개된 무료 한도에서
+// 우리가 집계한 이번 기간 사용량을 빼서 remaining_pct 를 계산한다(표시: '예상').
+type Period = "day" | "month" | "total";
+
+type Basis = {
+  limit: number; // 기준 한도 (unit 단위)
+  unit: string; // 회 / 자 / Neuron
+  period: Period; // day · month · total(리셋 없음)
+  tz: string; // 기간 경계를 계산할 시간대
+  cost: number; // 실측 1회가 소모하는 양(unit)
+  limitLabel: string; // 카드의 기준 줄
+  resetLabel: string; // 리셋 안내
+};
+
+const GEMINI_RESET = "매일 17:00(KST) 리셋";
+const BASIS: Record<string, Basis> = {
+  gemini: {
+    limit: 10, unit: "회", period: "day", tz: "America/Los_Angeles", cost: 1,
+    limitLabel: "1일 10회", resetLabel: GEMINI_RESET,
+  },
+  gemini_backup: {
+    limit: 10, unit: "회", period: "day", tz: "America/Los_Angeles", cost: 1,
+    limitLabel: "1일 10회", resetLabel: GEMINI_RESET,
+  },
+  gemini_free_3: {
+    limit: 10, unit: "회", period: "day", tz: "America/Los_Angeles", cost: 1,
+    limitLabel: "1일 10회", resetLabel: GEMINI_RESET,
+  },
+  gemini_free_4: {
+    limit: 10, unit: "회", period: "day", tz: "America/Los_Angeles", cost: 1,
+    limitLabel: "1일 10회", resetLabel: GEMINI_RESET,
+  },
+  cohere: {
+    limit: 1000, unit: "회", period: "month", tz: "Asia/Seoul", cost: 1,
+    limitLabel: "월 1,000회", resetLabel: "매월 1일 00:00(KST) 리셋",
+  },
+  requesty: {
+    limit: 200, unit: "회", period: "day", tz: "UTC", cost: 1,
+    limitLabel: "1일 200회", resetLabel: "매일 09:00(KST) 리셋",
+  },
+  exaone: {
+    limit: 100, unit: "회", period: "day", tz: "UTC", cost: 1,
+    limitLabel: "1일 100회", resetLabel: "매일 09:00(KST) 리셋 · 2026-12-19 만료",
+  },
+  cloudflare: {
+    limit: 10000, unit: "Neuron", period: "day", tz: "UTC", cost: 1,
+    limitLabel: "1일 10,000 Neuron", resetLabel: "매일 09:00(KST) 리셋",
+  },
+  gcloud_tts: {
+    limit: 1000000, unit: "자", period: "month", tz: "America/Los_Angeles", cost: 2,
+    limitLabel: "월 100만 자", resetLabel: "매월 1일 17:00(KST) 리셋",
+  },
+  upstage: {
+    limit: 12000, unit: "회", period: "total", tz: "UTC", cost: 1,
+    limitLabel: "무료 크레딧 $10 ≈ 12,000회", resetLabel: "리셋 없음(크레딧 소진까지)",
+  },
+};
+
+function tzParts(ms: number, tz: string): Record<string, string> {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const out: Record<string, string> = {};
+  for (const p of fmt.formatToParts(new Date(ms))) if (p.type !== "literal") out[p.type] = p.value;
+  return out;
+}
+
+const tzDateKey = (ms: number, tz: string) => {
+  const p = tzParts(ms, tz);
+  return `${p.year}-${p.month}-${p.day}`;
+};
+const tzMonthKey = (ms: number, tz: string) => {
+  const p = tzParts(ms, tz);
+  return `${p.year}-${p.month}`;
+};
+
+function periodKey(b: Basis, ms: number): string {
+  if (b.period === "day") return tzDateKey(ms, b.tz);
+  if (b.period === "month") return tzMonthKey(ms, b.tz);
+  return "total";
+}
+
+// 기간이 바뀌는 다음 시각(현지 자정/월초). 시간대 오프셋이 정시 단위라
+// 정시 격자로 올라가며 날짜(월) 키가 바뀌는 순간을 찾으면 정확하다.
+function nextBoundary(b: Basis, ms: number): number | null {
+  if (b.period === "total") return null;
+  const startHour = Math.floor(ms / 3600000) * 3600000;
+  let t = startHour;
+  if (b.period === "day") {
+    const key = tzDateKey(ms, b.tz);
+    for (let i = 0; i < 30; i++) {
+      t += 3600000;
+      if (tzDateKey(t, b.tz) !== key) return t;
+    }
+    return ms + 86400000;
+  }
+  const key = tzMonthKey(ms, b.tz);
+  for (let i = 0; i < 24 * 33; i++) {
+    t += 3600000;
+    if (tzMonthKey(t, b.tz) !== key) return t;
+  }
+  return ms + 86400000 * 31;
+}
+
+const fmtCount = (n: number) => Math.round(n).toLocaleString("en-US");
+
+// 이번 기간 누적 사용량 = 직전 기록(같은 기간) + 이번 실측 소모량.
+// 기간이 바뀌었으면 0 에서 시작한다(리셋). 응답이 429 면 0% 로 고정.
+function applyEstimate(row: Dict, prev: Dict | null, freshOk: boolean): void {
+  const b = BASIS[row.provider];
+  if (!b) return;
+  const now = nowMs();
+  const key = periodKey(b, now);
+  const prevDetail = prev && prev.detail && typeof prev.detail === "object" ? prev.detail : null;
+  const prevUsage = prevDetail && prevDetail.usage && typeof prevDetail.usage === "object"
+    ? prevDetail.usage
+    : null;
+  let used = prevUsage && prevUsage.period_key === key ? Number(prevUsage.used) || 0 : 0;
+  if (freshOk && row.status === "ok") used += b.cost;
+  if (row.status === "limited") used = Math.max(used, b.limit);
+  used = Math.max(0, Math.min(b.limit, used));
+
+  const pct = used <= 0 ? 100 : Math.max(0, Math.min(100, Math.floor((1 - used / b.limit) * 1000) / 10));
+  row.remaining_pct = pct;
+
+  const detail = row.detail && typeof row.detail === "object" ? row.detail : {};
+  row.detail = {
+    ...detail,
+    pct_source: "estimated",
+    usage: {
+      period_key: key,
+      used,
+      limit: b.limit,
+      unit: b.unit,
+      period: b.period,
+      period_tz: b.tz,
+      cost_per_probe: freshOk ? b.cost : null,
+      updated_at: iso(now),
+    },
+  };
+  row.limit_text = `${b.limitLabel} · ${b.resetLabel}`;
+
+  const periodWord = b.period === "day" ? "오늘" : b.period === "month" ? "이번 달" : "누적";
+  const gap = /^[A-Za-z]/.test(b.unit) ? " " : "";
+  const usageLine = `${periodWord} ${fmtCount(used)}/${fmtCount(b.limit)}${gap}${b.unit} 사용`;
+  if (row.status === "limited") {
+    row.remaining_text = `한도 소진 · ${b.limitLabel} 기준`;
+  } else if (row.status === "ok" || used > 0) {
+    row.remaining_text = usageLine;
+  }
+  row.reset_at = iso(nextBoundary(b, now));
+}
+
 // ────────────────────────────── helpers ──────────────────────────────
 const SECRETS: string[] = [];
 
@@ -892,6 +1053,7 @@ function compact(rows: Dict[]): Dict[] {
       status: r.status,
       http_status: r.http_status,
       remaining_pct: r.remaining_pct,
+      pct_source: (r.detail && r.detail.pct_source) || null,
       remaining_text: r.remaining_text,
       limit_text: r.limit_text,
       reset_at: r.reset_at,
@@ -963,6 +1125,7 @@ async function runProbes(): Promise<Dict> {
       const row = res.value;
       row.provider = row.provider || name;
       row.checked_at = iso(nowMs());
+      row.__fresh_ok = row.status === "ok"; // 이번에 실제로 호출해 200 을 받았는가
       rows.push(row);
     } else {
       const [label, emoji, cat] = DEFAULTS[name] || [name, "🔧", "기타"];
@@ -982,6 +1145,7 @@ async function runProbes(): Promise<Dict> {
     const row = { ...info.row };
     row.detail = info.row.detail || {};
     row.notes = info.why; // checked_at 은 실제 호출 시각 그대로 둔다(가짜 갱신 금지)
+    row.__fresh_ok = false; // 재호출을 생략했으니 사용량을 더하지 않는다
     rows.push(row);
     skipped.push({ provider: name, reason: info.why });
   }
@@ -996,6 +1160,23 @@ async function runProbes(): Promise<Dict> {
     row.limit_text = row.limit_text || LIMIT_DEFAULTS[row.provider] || null;
     // upsert 로 보낼 수 없는 값 정리
     delete row.id;
+  }
+
+  // ── 기준 한도 기반 예상 잔여 % 적용 ──
+  // 한도가 공개된 제공자는 누적 사용량을 차감해 계산하고, 그 밖의 제공자는
+  // API가 준 실측 %(api) 또는 % 없음(none)으로 표시 방식을 남긴다.
+  const prevByName: Record<string, Dict> = {};
+  for (const p of prevRows) if (p && p.provider) prevByName[p.provider] = p;
+  for (const row of rows) {
+    const freshOk = row.__fresh_ok === true;
+    delete row.__fresh_ok;
+    if (BASIS[row.provider]) {
+      applyEstimate(row, prevByName[row.provider] || null, freshOk);
+    } else {
+      const d = row.detail && typeof row.detail === "object" && !Array.isArray(row.detail) ? row.detail : {};
+      d.pct_source = row.remaining_pct == null ? "none" : "api";
+      row.detail = d;
+    }
   }
   rows.sort((a, b) => (ORDER[a.provider] ?? 999) - (ORDER[b.provider] ?? 999));
 

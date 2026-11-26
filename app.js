@@ -241,6 +241,8 @@
       available: row.available,
       httpStatus: row.http_status,
       remainingPct: row.remaining_pct == null ? null : Number(row.remaining_pct),
+      pctSource: (row.detail && row.detail.pct_source) || null,
+      usage: (row.detail && row.detail.usage) || null,
       remainingText: row.remaining_text || '',
       limitText: row.limit_text || '',
       usedText: row.used_text || '',
@@ -843,9 +845,11 @@
   function quotaCardHTML(q) {
     var st = q.status;
     var pct = q.remainingPct;
+    var est = q.pctSource === 'estimated';
     var value;
     if (pct != null) {
-      value = '<span class="q-value">' + fmtPct(pct) + '<small>%</small></span><span class="q-value-sub">남음</span>';
+      value = '<span class="q-value">' + fmtPct(pct) + '<small>%</small></span><span class="q-value-sub">남음</span>' +
+        (est ? '<span class="q-tag" title="API가 숫자를 주지 않아 기준 무료 한도에서 누적 사용량을 뺀 예상치입니다">예상</span>' : '');
     } else if (st === 'ok') {
       value = '<span class="q-value word ok">사용 가능</span>';
     } else if (st === 'limited') {
@@ -856,14 +860,14 @@
       value = '<span class="q-value word">미확인</span>';
     }
     var bar = pct == null ? '' :
-      '<div class="bar"><i data-state="' + st + '" style="width:' + clamp(pct, 0, 100) + '%"></i></div>';
+      '<div class="bar"' + (est ? ' data-src="est"' : '') + '><i data-state="' + st + '" style="width:' + clamp(pct, 0, 100) + '%"></i></div>';
     var meta = '';
     if (q.remainingText) meta += '<span class="q-line">' + esc(q.remainingText) + '</span>';
-    if (q.limitText) meta += '<span class="q-line muted">' + esc(q.limitText) + '</span>';
+    if (q.limitText) meta += '<span class="q-line muted">' + (est ? '예상 기준 · ' : '') + esc(q.limitText) + '</span>';
     if (q.resetAt && q.resetAt > Date.now()) meta += '<span class="q-line accent">' + esc(relUntil(q.resetAt)) + '</span>';
     if (q.usedText) meta += '<span class="q-line muted">' + esc(q.usedText) + '</span>';
     if (q.notes) meta += '<span class="q-line warn">' + esc(q.notes) + '</span>';
-    return '<article class="q-card" data-state="' + st + '">' +
+    return '<article class="q-card" data-state="' + st + '"' + (est ? ' data-src="est"' : '') + '>' +
       '<div class="q-top">' +
       '<span class="q-emoji">' + esc(q.emoji) + '</span>' +
       '<span class="q-name">' + esc(q.label) + '</span>' +
