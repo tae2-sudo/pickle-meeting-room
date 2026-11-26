@@ -460,6 +460,7 @@ const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
 //   → 실제 호출 수보다 적을 수 있는 '하한' 추정이며, 화면에도 '노션 N건 합산'으로만 표시한다.
 // · 노션 조회가 실패해도 실측은 그대로 진행한다(try/catch). 이때는 직전 노션 합산값을 유지한다.
 const NOTION_KEY = ENV("NOTION_API_KEY");
+if (NOTION_KEY) addSecret(NOTION_KEY); // 오류 본문에 토큰이 섞여도 저장·응답 전에 지운다
 const NOTION_VERSION = "2022-06-28";
 const NOTION_LOG_PAGE = Deno.env.get("NOTION_LOG_PAGE_ID") || "42184f0c-8f19-8195-8eed-f4089917da7a";
 const NOTION_TOP_PAGES = 4; // 상위 페이지 블록 100개 × 4 = 400개까지 훑는다
