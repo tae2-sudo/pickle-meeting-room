@@ -1,16 +1,16 @@
 /* 비서 통합 회의실 — offline shell
    정책: HTML/CSS/JS 는 네트워크 우선(항상 최신), 실패 시 캐시.
    이미지·매니페스트는 캐시 우선.
-   v10: 기준 한도에서 차감한 '예상 %'·게이지 표시 (v1.4.0) */
-const CACHE = 'pickle-meeting-room-v15';
+   v11: 기준 한도에서 차감한 '예상 %'·게이지 표시 (v1.4.1) */
+const CACHE = 'pickle-meeting-room-v16';
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=1.4.0',
-  './config.js?v=1.4.0',
+  './styles.css?v=1.4.1',
+  './config.js?v=1.4.1',
   './vendor/supabase.js',
-  './app.js?v=1.4.0',
-  './manifest.webmanifest?v=1.4.0',
+  './app.js?v=1.4.1',
+  './manifest.webmanifest?v=1.4.1',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/maskable-512.png'
