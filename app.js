@@ -338,7 +338,7 @@
   async function loadRemote(opts) {
     opts = opts || {};
     if (!sb) return false;
-    if (!opts.silent) setConn('connecting');
+    if (!opts.silent && connState !== 'live') setConn('connecting');
     var res = await Promise.all([
       sb.from('rooms').select('*').order('created_at', { ascending: true }),
       sb.from('assistants').select('*').order('created_at', { ascending: true }),
@@ -974,7 +974,7 @@
       renderAll();
       setDashboard(false);
       if (!isQuotaRoom()) scrollToBottom();
-      toast('#' + r.name + (r.slug === QUOTA_SLUG ? ' 채널방으로 이동했습니다.' : ' 회의실로 이동했습니다.'));
+      toast('# ' + r.name + (r.slug === QUOTA_SLUG ? ' 채널방으로 이동했습니다.' : ' 회의실로 이동했습니다.'));
     } else {
       closeDrawer();
     }
