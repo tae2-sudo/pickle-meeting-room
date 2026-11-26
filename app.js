@@ -897,7 +897,7 @@
     if (grid) {
       grid.innerHTML = state.quotas.length
         ? state.quotas.map(quotaCardHTML).join('')
-        : '<div class="q-empty">실측 기록이 없습니다.<br>서버에서 <code>check_api_quotas.py</code> 가 실행되면 카드가 채워집니다.</div>';
+        : '<div class="q-empty">실측 기록이 없습니다.<br>위의 <b>실시간 실측 새로고침</b> 버튼을 누르면 채워집니다.</div>';
     }
     var runsEl = $('#quotaRuns');
     if (runsEl) {
@@ -1792,12 +1792,56 @@
 
     var qRefresh = $('#quotaRefresh');
     if (qRefresh) {
-      qRefresh.addEventListener('click', function () {
+      var qBusy = false;
+      qRefresh.addEventListener('click', async function () {
+        if (qBusy) return;
+        var fnUrl = CFG.quotaFunctionUrl || '';
+        if (!fnUrl) {
+          toast('실시간 실측 주소가 설정되지 않았습니다.');
+          return;
+        }
+        qBusy = true;
+        var labelEl = qRefresh.querySelector('.q-refresh-label');
+        var prevLabel = labelEl ? labelEl.textContent : '';
         qRefresh.classList.add('spin');
-        setTimeout(function () { qRefresh.classList.remove('spin'); }, 700);
-        loadRemote({ silent: true }).then(function (ok) {
-          if (ok) toast('DB에서 최신 실측값을 불러왔습니다.');
-        });
+        qRefresh.setAttribute('aria-busy', 'true');
+        qRefresh.disabled = true;
+        if (labelEl) labelEl.textContent = '실측 중…';
+        try {
+          var res = await fetch(fnUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: CFG.supabaseAnonKey || '',
+              Authorization: 'Bearer ' + (CFG.supabaseAnonKey || '')
+            },
+            body: '{}'
+          });
+          var data = null;
+          try { data = await res.json(); } catch (e) { data = null; }
+          if (!res.ok || !data || data.ok === false) {
+            throw new Error((data && data.error) || ('HTTP ' + res.status));
+          }
+          await loadRemote({ silent: true });
+          if (data.ran === false) {
+            var wait = (data.skipped && data.skipped[0] && data.skipped[0].reason) || '잠시 뒤 다시 눌러 주세요.';
+            toast('지난 실측 결과입니다 · ' + wait);
+          } else {
+            var skippedN = (data.skipped || []).length;
+            toast('실측 완료 · 정상 ' + (data.ok_count || 0) + '곳' +
+              (data.limited_count ? ' · 한도초과 ' + data.limited_count + '곳' : '') +
+              (data.error_count ? ' · 오류 ' + data.error_count + '곳' : '') +
+              (skippedN ? ' (' + skippedN + '곳은 재호출 생략)' : ''));
+          }
+        } catch (err) {
+          toast('실시간 실측 실패: ' + ((err && err.message) || err));
+        } finally {
+          qBusy = false;
+          qRefresh.classList.remove('spin');
+          qRefresh.removeAttribute('aria-busy');
+          qRefresh.disabled = false;
+          if (labelEl) labelEl.textContent = prevLabel || '실시간 실측 새로고침';
+        }
       });
     }
 

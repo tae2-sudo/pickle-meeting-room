@@ -60,10 +60,10 @@ drop policy if exists "api_quota_runs insert" on public.api_quota_runs;
 create policy "api_quota_runs read"   on public.api_quota_runs for select to anon, authenticated using (true);
 create policy "api_quota_runs insert" on public.api_quota_runs for insert to anon, authenticated with check (true);
 
-grant usage on schema public to anon, authenticated;
-grant select, insert, update on public.api_quotas     to anon, authenticated;
-grant select, insert, update on public.api_quota_runs to anon, authenticated;
-grant usage, select on sequence public.api_quota_runs_id_seq to anon, authenticated;
+grant usage on schema public to anon, authenticated, service_role;
+grant select, insert, update on public.api_quotas     to anon, authenticated, service_role;
+grant select, insert, update on public.api_quota_runs to anon, authenticated, service_role;
+grant usage, select on sequence public.api_quota_runs_id_seq to anon, authenticated, service_role;
 
 -- ── Realtime: 실측 결과가 바뀌면 열려 있는 화면에 즉시 반영 ──
 alter table public.api_quotas     replica identity full;
@@ -102,6 +102,7 @@ values
   ('gemini',        'Gemini (기본)',      '✨', 'LLM',    'unknown', 30, 'AI Studio 무료 등급 · TTS 무료 한도'),
   ('gemini_backup', 'Gemini (백업)',      '✨', 'TTS',    'unknown', 40, 'AI Studio 무료 등급 · TTS 무료 한도'),
   ('gemini_free_3', 'Gemini (3호)',       '✨', 'TTS',    'unknown', 50, 'AI Studio 무료 등급 · TTS 무료 한도'),
+  ('gemini_free_4', 'Gemini (4호)',       '✨', 'LLM',    'unknown', 55, 'AI Studio 무료 등급 · 텍스트 무료 한도'),
   ('cohere',        'Cohere',             '🧭', 'LLM',    'unknown', 60, 'Trial 무료 · 월 1,000회'),
   ('upstage',       'Upstage',            '🌞', 'LLM',    'unknown', 70, '무료 크레딧 $10 (약 1.2만 회, ~2027-02-20)'),
   ('zai',           'Z.AI (GLM)',         '🧩', 'LLM',    'unknown', 80, '무료 등급 · 동시 호출 제한(flash 1~2건)'),

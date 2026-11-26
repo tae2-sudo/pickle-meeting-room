@@ -20,7 +20,22 @@
 - 기본 회의실 3개와 **보리(태희님 비서)** 가 시드되어 있어, 처음 열어도 살아 있는 회의실이 보입니다.
 - 서비스워커 캐시를 v5 로 올려 이전 `localStorage` 버전이 캐시로 남지 않게 했습니다.
 
-## 이번 버전(v1.2.x)에서 달라진 점 — 📊 AI-API-사용량 채널방
+## 이번 버전(v1.3.0)에서 달라진 점 — 버튼 한 번으로 실시간 실측
+
+- `# 📊 AI-API-사용량` 상단 버튼이 **`실시간 실측 새로고침`** 으로 바뀌었습니다.
+  누르면 브라우저가 Supabase **Edge Function `check-api-quotas`** 를 호출하고,
+  함수가 각 API 를 직접 호출해 잰 뒤 `api_quotas` · `api_quota_runs` 에 기록합니다.
+  화면은 응답을 받은 뒤 DB 를 다시 읽고, 다른 기기·탭에는 Realtime 으로 즉시 반영됩니다.
+  **피클(에이전트) 토큰을 쓰지 않습니다.**
+- API 키는 **Edge Function Secrets** 에만 있습니다(`OPENROUTER_API_KEY` 등 15개).
+  브라우저·저장소·DB 어디에도 키가 없고, 함수는 응답 본문을 스크럽해서 저장합니다.
+- 무료 한도 보호: 45초 안의 재요청은 실측 없이 지난 결과를 돌려주고,
+  리셋 전 `한도 초과` 제공자와 Gemini 키(6시간 스로틀)는 재호출을 생략합니다(카드에 `재호출 생략` 표시).
+- 실측 대상 14곳: OpenRouter, Groq, Gemini 기본·백업·3호·4호, Cohere, Upstage, Z.AI, EXAONE,
+  Requesty, Cloudflare Workers AI, Pixabay, Google Cloud TTS.
+- 자산 버전 `1.3.0`, 서비스워커 캐시 `v14`.
+
+## 이전 버전(v1.2.x) — 📊 AI-API-사용량 채널방
 
 - 비서 회의실과 **분리된 채널방 `# 📊 AI-API-사용량`** 을 추가했습니다.
   드로어에서 `회의실`(대화방)과 `채널방`(실측 카드)이 다른 목록·다른 색으로 나뉘고,
@@ -70,6 +85,7 @@
 
 - 스키마·RLS·RPC·시드: [`supabase/schema.sql`](supabase/schema.sql) (SQL Editor 에 붙여넣어 실행, 재실행 안전)
 - 채널방: [`supabase/api_quotas.sql`](supabase/api_quotas.sql) — `api_quotas`, `api_quota_runs`, `# 📊 AI-API-사용량` 방 시드
+- Edge Function: [`supabase/functions/check-api-quotas/index.ts`](supabase/functions/check-api-quotas/index.ts) — 배포 주소 `https://fbmgkbspiswuekvlhpth.supabase.co/functions/v1/check-api-quotas` (CORS 전체 허용, 키는 Secrets 에만)
 - 테이블: `rooms`, `assistants`, `invites`, `messages`, `api_quotas`, `api_quota_runs`
 - Realtime: `messages`, `assistants`, `rooms`, `api_quotas`, `api_quota_runs` (publication 등록, `replica identity full`)
 - 함수: `verify_invite`, `redeem_invite`, `report_usage` (security definer)
