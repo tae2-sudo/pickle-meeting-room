@@ -161,7 +161,12 @@ function applyEstimate(row: Dict, prev: Dict | null, freshOk: boolean): void {
     : null;
   let used = prevUsage && prevUsage.period_key === key ? Number(prevUsage.used) || 0 : 0;
   if (freshOk && row.status === "ok") used += b.cost;
-  if (row.status === "limited") used = Math.max(used, b.limit);
+  // 429 가 '일일/월 한도 소진'이면 0% 로 고정하지만, 동시 요청·분당 속도 제한처럼
+  // 잠시 뒤 풀리는 429 는 누적 사용량 그대로 둔다(0% 로 표시하면 사실과 다르다).
+  const transientLimit = row.status === "limited" &&
+    (/동시 요청 초과|요청 속도 제한/.test(`${row.notes || ""} ${(prev && prev.notes) || ""}`) ||
+      (prevDetail && prevDetail.limit_kind === "transient"));
+  if (row.status === "limited" && !transientLimit) used = Math.max(used, b.limit);
   used = Math.max(0, Math.min(b.limit, used));
 
   const pct = used <= 0 ? 100 : Math.max(0, Math.min(100, Math.floor((1 - used / b.limit) * 1000) / 10));
@@ -171,6 +176,7 @@ function applyEstimate(row: Dict, prev: Dict | null, freshOk: boolean): void {
   row.detail = {
     ...detail,
     pct_source: "estimated",
+    limit_kind: row.status === "limited" ? (transientLimit ? "transient" : "quota") : null,
     usage: {
       period_key: key,
       used,
@@ -188,11 +194,19 @@ function applyEstimate(row: Dict, prev: Dict | null, freshOk: boolean): void {
   const gap = /^[A-Za-z]/.test(b.unit) ? " " : "";
   const usageLine = `${periodWord} ${fmtCount(used)}/${fmtCount(b.limit)}${gap}${b.unit} 사용`;
   if (row.status === "limited") {
-    row.remaining_text = `한도 소진 · ${b.limitLabel} 기준`;
+    row.remaining_text = transientLimit
+      ? `${usageLine} · 동시 요청 초과(잠시 후 재시도)`
+      : `한도 소진 · ${b.limitLabel} 기준`;
   } else if (row.status === "ok" || used > 0) {
     row.remaining_text = usageLine;
   }
-  row.reset_at = iso(nextBoundary(b, now));
+  // 동시·속도 제한은 잠깐 뒤 재시도, 그 밖에는 기간 경계(일/월)가 리셋 시각.
+  if (transientLimit) {
+    const probeReset = row.reset_at ? Date.parse(String(row.reset_at)) : NaN;
+    row.reset_at = iso(Number.isFinite(probeReset) && probeReset > now ? probeReset : now + 15 * 60 * 1000);
+  } else {
+    row.reset_at = iso(nextBoundary(b, now));
+  }
 }
 
 // ────────────────────────────── helpers ──────────────────────────────
