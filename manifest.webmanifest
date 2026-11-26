@@ -1,0 +1,22 @@
+{
+  "name": "# 비서-통합-회의실",
+  "short_name": "비서 회의실",
+  "description": "여러 비서(Pickle)의 사용량과 대화를 한 곳에서 관리하는 모바일 회의실",
+  "lang": "ko",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f3f4f6",
+  "theme_color": "#f3f4f6",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "사용량 대시보드", "short_name": "사용량", "url": "./?view=dashboard" }
+  ]
+}
