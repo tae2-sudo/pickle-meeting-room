@@ -20,6 +20,19 @@
 - 기본 회의실 3개와 **보리(태희님 비서)** 가 시드되어 있어, 처음 열어도 살아 있는 회의실이 보입니다.
 - 서비스워커 캐시를 v5 로 올려 이전 `localStorage` 버전이 캐시로 남지 않게 했습니다.
 
+## 이번 버전(v1.2.x)에서 달라진 점 — 📊 AI-API-사용량 채널방
+
+- 비서 회의실과 **분리된 채널방 `# 📊 AI-API-사용량`** 을 추가했습니다.
+  드로어에서 `회의실`(대화방)과 `채널방`(실측 카드)이 다른 목록·다른 색으로 나뉘고,
+  채널방에서는 대화 작성창·멤버 목록이 사라져 두 방의 데이터가 섞이지 않습니다.
+- 채널방 카드는 서버 실측 스크립트(`/workspace/scripts/check_api_quotas.py`, 저장소 밖)가
+  실제 API 를 호출해 얻은 값만 채웁니다 — 상태(정상/한도초과/오류), 잔여량·비율, 무료 한도,
+  리셋까지 남은 시간, 마지막 확인 시각, 응답 HTTP 코드.
+- 화면은 `api_quotas` · `api_quota_runs` 를 **Supabase Realtime 으로 구독**하므로
+  스크립트가 새 실측을 기록하면 새로고침 없이 카드·최근 실측 기록이 갱신됩니다.
+  브라우저는 API 키를 갖지 않습니다(키는 저장소 밖 스크립트에만 있음).
+- 카드의 시각은 전부 **마지막 실측 시각**이며, 6시간이 지나면 `갱신 필요` 로 표시됩니다.
+
 ## 화면과 기능
 
 - **상단 바** — 회의실 이름, 메시지 수·온라인 인원, 실시간 연결 상태, 멤버/검색/설정/더보기
@@ -56,8 +69,9 @@
 ## 데이터베이스
 
 - 스키마·RLS·RPC·시드: [`supabase/schema.sql`](supabase/schema.sql) (SQL Editor 에 붙여넣어 실행, 재실행 안전)
-- 테이블: `rooms`, `assistants`, `invites`, `messages`
-- Realtime: `messages`, `assistants`, `rooms` (publication 등록, `replica identity full`)
+- 채널방: [`supabase/api_quotas.sql`](supabase/api_quotas.sql) — `api_quotas`, `api_quota_runs`, `# 📊 AI-API-사용량` 방 시드
+- 테이블: `rooms`, `assistants`, `invites`, `messages`, `api_quotas`, `api_quota_runs`
+- Realtime: `messages`, `assistants`, `rooms`, `api_quotas`, `api_quota_runs` (publication 등록, `replica identity full`)
 - 함수: `verify_invite`, `redeem_invite`, `report_usage` (security definer)
 - 키: 브라우저에는 **anon(publishable) 공개 키만** 사용합니다. `service_role` 키는 저장소·코드·문서 어디에도 없습니다.
 
@@ -86,6 +100,7 @@ app.js                상태 관리 · Supabase 연동 · 렌더링 · 이벤트
 config.js             Supabase URL · anon 키 · 배포 주소
 vendor/supabase.js    @supabase/supabase-js v2 (UMD, 로컬 번들)
 supabase/schema.sql   DB 스키마 · RLS · RPC · 시드
+supabase/api_quotas.sql  AI API 사용량 채널방 스키마 · Realtime · 방 시드
 tests/live_check.py   라이브 백엔드 테스트
 manifest.webmanifest  PWA 매니페스트
 sw.js                 오프라인 서비스 워커 (cache v5)

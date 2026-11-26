@@ -901,7 +901,9 @@
     }
     var runsEl = $('#quotaRuns');
     if (runsEl) {
-      runsEl.innerHTML = state.quotaRuns.length ? state.quotaRuns.map(function (r) {
+      /* 전체 제공자를 다 돈 실측만 '기록'으로 보여준다 (--only 부분 점검 제외) */
+      var runs = state.quotaRuns.filter(function (r) { return !state.quotas.length || r.total >= state.quotas.length; });
+      runsEl.innerHTML = runs.length ? runs.map(function (r) {
         return '<div class="q-run">' +
           '<span class="q-run-time">' + esc(dayLabel(r.finishedAt)) + ' ' + esc(fmtClock(r.finishedAt)) + '</span>' +
           '<span class="q-run-nums"><b class="ok">' + r.ok + '</b> 정상 · <b class="lim">' + r.limited +
@@ -910,7 +912,10 @@
       }).join('') : '<p class="set-hint">아직 실측 기록이 없습니다.</p>';
     }
     var rc = $('#quotaRunCount');
-    if (rc) rc.textContent = state.quotaRuns.length ? '(' + state.quotaRuns.length + '회)' : '';
+    if (rc) {
+      var nRuns = state.quotaRuns.filter(function (r) { return !state.quotas.length || r.total >= state.quotas.length; }).length;
+      rc.textContent = nRuns ? '(' + nRuns + '회)' : '';
+    }
   }
 
   /* 채널방과 회의실의 화면·컴포저를 서로 섮이지 않게 전환한다 */

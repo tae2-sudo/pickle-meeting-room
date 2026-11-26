@@ -2,15 +2,15 @@
    정책: HTML/CSS/JS 는 네트워크 우선(항상 최신), 실패 시 캐시.
    이미지·매니페스트는 캐시 우선.
    v8: 📊 AI-API-사용량 채널방 추가 (실측 카드 + 실시간 구독) (v1.0.x 의 localStorage 캐시를 반드시 밀어낸다) */
-const CACHE = 'pickle-meeting-room-v10';
+const CACHE = 'pickle-meeting-room-v11';
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=1.2.2',
-  './config.js?v=1.2.2',
+  './styles.css?v=1.2.3',
+  './config.js?v=1.2.3',
   './vendor/supabase.js',
-  './app.js?v=1.2.2',
-  './manifest.webmanifest?v=1.2.2',
+  './app.js?v=1.2.3',
+  './manifest.webmanifest?v=1.2.3',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/maskable-512.png'
