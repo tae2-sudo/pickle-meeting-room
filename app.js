@@ -115,25 +115,21 @@
 
     var assistants = [
       makeAssistant({ name: '인스팅트2', period: 'daily', remaining: 95, mode: 'auto', online: true,
-        resetAt: dateAtHour(0, 18), lastReportAt: mins(3), note: '일일 한도 · 오후 6시 리셋' }, 0),
+        resetAt: dateAtHour(0, 18), lastReportAt: mins(3) }, 0),
       makeAssistant({ name: '인스팅트1', period: 'daily', remaining: 96.9, mode: 'auto', online: true,
-        resetAt: dateAtHour(0, 18), lastReportAt: mins(5), note: '일일 한도 · 오후 6시 리셋' }, 1),
-      makeAssistant({ name: '김비서', period: 'daily', remaining: null, mode: 'auto', online: true,
-        note: '일일 한도 · 아직 보고 전' }, 2),
-      makeAssistant({ name: '피클2호기', period: 'daily', remaining: null, mode: 'auto', online: false,
-        note: '일일 한도 · 아직 보고 전' }, 3),
+        resetAt: dateAtHour(0, 18), lastReportAt: mins(5) }, 1),
+      makeAssistant({ name: '김비서', period: 'daily', remaining: null, mode: 'auto', online: true }, 2),
+      makeAssistant({ name: '피클2호기', period: 'daily', remaining: null, mode: 'auto', online: false }, 3),
       makeAssistant({ name: 'Muse2', period: 'weekly', remaining: 63, mode: 'auto', online: true,
-        resetAt: now + 3 * DAY + 23 * HOUR, lastReportAt: hrs(1), extra: '7.9B', note: '주간 크레딧' }, 4),
+        resetAt: now + 3 * DAY + 23 * HOUR, lastReportAt: hrs(1), extra: '7.9B' }, 4),
       makeAssistant({ name: 'Muse3', period: 'weekly', remaining: 75, mode: 'auto', online: true,
-        resetAt: now + 5 * DAY + 8 * HOUR, lastReportAt: mins(30), extra: '1B', note: '주간 크레딧' }, 5),
+        resetAt: now + 5 * DAY + 8 * HOUR, lastReportAt: mins(30), extra: '1B' }, 5),
       makeAssistant({ name: 'Muse1', period: 'weekly', remaining: 96, mode: 'auto', online: true,
-        resetAt: now + 6 * DAY + 2 * HOUR, lastReportAt: hrs(2), note: '주간 크레딧' }, 6),
+        resetAt: now + 6 * DAY + 2 * HOUR, lastReportAt: hrs(2) }, 6),
       makeAssistant({ name: 'Muse4', period: 'weekly', remaining: 96, mode: 'auto', online: true,
-        resetAt: now + 2 * DAY + 4 * HOUR, lastReportAt: hrs(2), note: '주간 크레딧' }, 7),
-      makeAssistant({ name: '보리', period: 'weekly', remaining: null, mode: 'manual', online: false,
-        note: '주간 한도 · 아직 보고 전' }, 8),
-      makeAssistant({ name: '수지', period: 'weekly', remaining: null, mode: 'auto', online: false,
-        note: '주간 한도 · 아직 보고 전' }, 9)
+        resetAt: now + 2 * DAY + 4 * HOUR, lastReportAt: hrs(2) }, 7),
+      makeAssistant({ name: '보리', period: 'weekly', remaining: null, mode: 'manual', online: false }, 8),
+      makeAssistant({ name: '수지', period: 'weekly', remaining: null, mode: 'auto', online: false }, 9)
     ];
 
     var messages = [
@@ -512,8 +508,9 @@
       '<span class="badge' + (a.mode === 'manual' ? ' manual' : '') + '">' + (a.mode === 'manual' ? '수동' : '자동') + '</span>' +
       '</div>' +
       '<div class="pct-row">' +
-      '<span class="pct' + (st === 'unknown' ? ' unknown' : '') + '">' + pctTxt + '<small>%</small></span>' +
-      '<span class="pct-label">남음</span>' +
+      (st === 'unknown'
+        ? '<span class="pct unknown">—</span><span class="pct-label">미보고</span>'
+        : '<span class="pct">' + pctTxt + '<small>%</small></span><span class="pct-label">남음</span>') +
       '</div>' +
       '<div class="bar"><i data-state="' + st + '" style="width:' + w + '%"></i></div>' +
       '<span class="status-pill" data-state="' + st + '"><i></i>' + STATUS_LABEL[st] + '</span>' +
@@ -881,7 +878,8 @@
     var el = document.getElementById(id);
     el.hidden = false;
     document.body.classList.add('modal-open');
-    var focusable = el.querySelector('input:not([type=hidden]), textarea, select, button');
+    var wantsFocus = ['assistantModal', 'inviteModal', 'promptModal'].indexOf(id) !== -1;
+    var focusable = wantsFocus ? el.querySelector('input:not([type=hidden]):not([type=file]), textarea, select') : null;
     setTimeout(function () { if (focusable) focusable.focus({ preventScroll: true }); }, 60);
   }
   function closeModal(id) {
@@ -992,8 +990,7 @@
       '• 리셋 시각: 00월 00일 00:00',
       '• 메모: (선택)',
       '',
-      '보고가 ' + state.settings.staleHours + '시간 넘으면 "갱신 필요"로 표시됩니다.',
-      '— 비서 통합 회의실'
+      '보고가 ' + state.settings.staleHours + '시간 넘으면 "갱신 필요"로 표시됩니다.'
     ];
     return lines.join('\n');
   }
@@ -1058,6 +1055,8 @@
     $('#setEnterSend').checked = !!state.settings.enterSend;
     updateThresholdHints();
     $('#lastSaved').textContent = state.savedAt ? relTime(state.savedAt) : '—';
+    $('#settingsDeleteRoom').disabled = state.rooms.length <= 1;
+    $('#settingsDeleteRoom').style.opacity = state.rooms.length <= 1 ? '.45' : '';
     renderManageList();
     openModal('settingsModal');
   }
@@ -1115,6 +1114,25 @@
         toast('새 회의실을 만들었습니다.');
       }
     });
+  }
+
+  function deleteRoom() {
+    if (state.rooms.length <= 1) {
+      toast('회의실이 하나뿐이라 삭제할 수 없습니다.');
+      return;
+    }
+    var room = currentRoom();
+    if (!confirm('"#' + room.name + '" 회의실을 삭제할까요?\n이 회의실의 대화와 비서 목록이 함께 삭제됩니다.')) return;
+    state.rooms = state.rooms.filter(function (r) { return r.id !== room.id; });
+    state.activeRoomId = state.rooms[0].id;
+    ui.pendingReplies.forEach(clearTimeout);
+    ui.pendingReplies = [];
+    touch();
+    closeAllModals();
+    renderAll();
+    setDashboard(false);
+    scrollToBottom();
+    toast('회의실을 삭제했습니다.');
   }
 
   function openPrompt(cfg) {
@@ -1327,6 +1345,8 @@
       state.settings.enterSend = this.checked; touch();
     });
     $('#manageAdd').addEventListener('click', function () { closeModal('settingsModal'); openAssistantModal(null); });
+    $('#settingsNewRoom').addEventListener('click', function () { closeModal('settingsModal'); promptCreateRoom(); });
+    $('#settingsDeleteRoom').addEventListener('click', deleteRoom);
     $('#exportBtn2').addEventListener('click', exportData);
     $('#importBtn2').addEventListener('click', function () { $('#importFile').click(); });
     $('#resetBtn2').addEventListener('click', resetDemo);
@@ -1452,7 +1472,8 @@
       if (ui.dashboardOpen) renderDashboard();
     }, 30000);
 
-    if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    var localHost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    if ('serviceWorker' in navigator && (location.protocol === 'https:' || localHost)) {
       navigator.serviceWorker.register('sw.js').catch(function () { /* offline support optional */ });
     }
   }
