@@ -512,7 +512,7 @@
     var room = currentRoom();
     var c = counts();
     $('#roomTitle').textContent = room ? room.name : '회의실';
-    document.title = room ? '#' + room.name : '# 비서-통합-회의실';
+    document.title = room ? '# ' + room.name : '# 비서-통합-회의실';
     if (room && room.slug === QUOTA_SLUG) {
       var qc = quotaCounts();
       var lastAt = lastMeasuredAt();
