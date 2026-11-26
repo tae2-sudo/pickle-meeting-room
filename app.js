@@ -512,6 +512,7 @@
     var room = currentRoom();
     var c = counts();
     $('#roomTitle').textContent = room ? room.name : '회의실';
+    document.title = room ? '#' + room.name : '# 비서-통합-회의실';
     if (room && room.slug === QUOTA_SLUG) {
       var qc = quotaCounts();
       var lastAt = lastMeasuredAt();
@@ -859,7 +860,8 @@
     var meta = '';
     if (q.remainingText) meta += '<span class="q-line">' + esc(q.remainingText) + '</span>';
     if (q.limitText) meta += '<span class="q-line muted">' + esc(q.limitText) + '</span>';
-    if (q.resetAt) meta += '<span class="q-line accent">' + esc(relUntil(q.resetAt)) + '</span>';
+    if (q.resetAt && q.resetAt > Date.now()) meta += '<span class="q-line accent">' + esc(relUntil(q.resetAt)) + '</span>';
+    if (q.usedText) meta += '<span class="q-line muted">' + esc(q.usedText) + '</span>';
     if (q.notes) meta += '<span class="q-line warn">' + esc(q.notes) + '</span>';
     return '<article class="q-card" data-state="' + st + '">' +
       '<div class="q-top">' +
