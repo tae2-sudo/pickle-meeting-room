@@ -475,6 +475,15 @@
     chatEl.scrollTop = chatEl.scrollHeight;
   }
 
+  function settleAtBottom() {
+    scrollToBottom();
+    requestAnimationFrame(scrollToBottom);
+    setTimeout(scrollToBottom, 240);
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(function () { scrollToBottom(); }).catch(function () {});
+    }
+  }
+
   /* ── rendering: dashboard ────────────────────────────────── */
   function cardHTML(a) {
     var st = statusOf(a);
@@ -561,7 +570,7 @@
       $('#dashboard').scrollTop = 0;
     } else {
       renderChat();
-      scrollToBottom();
+      settleAtBottom();
     }
   }
 
@@ -777,7 +786,7 @@
     if (ui.dashboardOpen) setDashboard(false);
     renderTop();
     renderChat({ bottom: true });
-    scrollToBottom();
+    settleAtBottom();
     var mentions = extractMentions(text);
     if (mentions.length) scheduleReplies(mentions, text);
   }
@@ -1483,7 +1492,7 @@
     bind();
     renderAll();
     setDashboard(ui.dashboardOpen);
-    if (!ui.dashboardOpen) scrollToBottom();
+    if (!ui.dashboardOpen) settleAtBottom();
 
     setInterval(function () {
       renderSummary();
