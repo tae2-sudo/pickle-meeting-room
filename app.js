@@ -130,6 +130,18 @@
   var sb = null;
   var channel = null;
   var retryTimer = null;
+  var retryScheduled = false;
+  var liveOnce = false;
+
+  function scheduleReconnect(delay) {
+    if (retryScheduled) return;
+    retryScheduled = true;
+    retryTimer = setTimeout(function () {
+      retryScheduled = false;
+      if (navigator.onLine === false) { setConn('offline'); return; }
+      connectRealtime();
+    }, delay);
+  }
 
   function currentRoom() {
     if (!state.rooms.length) return null;
@@ -297,29 +309,35 @@
   /* ── realtime ────────────────────────────────────────────── */
   function connectRealtime() {
     if (!sb) return;
-    if (channel) { try { sb.removeChannel(channel); } catch (e) { /* ignore */ } channel = null; }
     clearTimeout(retryTimer);
+    retryScheduled = false;
+    if (channel) { try { sb.removeChannel(channel); } catch (e) { /* ignore */ } channel = null; }
     setConn(navigator.onLine === false ? 'offline' : 'connecting');
 
-    channel = sb.channel('meeting-room-live')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, function (p) { onMessageInsert(p.new); })
+    var ch = sb.channel('meeting-room-live');
+    ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, function (p) { onMessageInsert(p.new); })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'assistants' }, function (p) { onAssistantUpsert(p.new); })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'assistants' }, function (p) { onAssistantUpsert(p.new); })
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'assistants' }, function (p) { onAssistantDelete(p.old); })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'rooms' }, function (p) { onRoomUpsert(p.new); })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms' }, function (p) { onRoomUpsert(p.new); });
 
-    channel.subscribe(function (status) {
+    ch.subscribe(function (status) {
+      if (ch !== channel) return;   // 이미 교체된 예전 채널의 콜백은 무시
       if (status === 'SUBSCRIBED') {
         setConn('live');
         if (!ui.loaded) loadRemote();
+        else if (liveOnce) loadRemote({ silent: true });  // 끊겼던 동안 놓친 변경 보충
+        liveOnce = true;
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
         setConn('error');
-        retryTimer = setTimeout(function () { if (navigator.onLine !== false) connectRealtime(); }, 12000);
+        scheduleReconnect(12000);
       } else if (status === 'CLOSED') {
         setConn('connecting');
+        scheduleReconnect(5000);
       }
     });
+    channel = ch;
   }
 
   function onMessageInsert(row) {
