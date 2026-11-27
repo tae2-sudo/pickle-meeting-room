@@ -46,7 +46,7 @@
   Analytics(7일 조회수)가 실패해도 Data API 결과만으로 정상 응답합니다(응답의 `warnings` 에 사유 표시).
 - 채널방 시드는 [`supabase/youtube_dashboard.sql`](supabase/youtube_dashboard.sql), 함수는
   [`supabase/functions/get-youtube-dashboard/index.ts`](supabase/functions/get-youtube-dashboard/index.ts).
-- 자산 버전 `1.6.6`, 서비스워커 캐시 `v29`.
+- 자산 버전 `1.6.7`, 서비스워커 캐시 `v30`.
 
 ## 이전 버전(v1.5.0)에서 달라진 점 — 📅 업로드-캘린더 채널방
 
@@ -158,11 +158,46 @@
 
 - 스키마·RLS·RPC·시드: [`supabase/schema.sql`](supabase/schema.sql) (SQL Editor 에 붙여넣어 실행, 재실행 안전)
 - 채널방: [`supabase/api_quotas.sql`](supabase/api_quotas.sql) — `api_quotas`, `api_quota_runs`, `# 📊 AI-API-사용량` 방 시드
-- Edge Function: [`supabase/functions/check-api-quotas/index.ts`](supabase/functions/check-api-quotas/index.ts) — 배포 주소 `https://fbmgkbspiswuekvlhpth.supabase.co/functions/v1/check-api-quotas` (CORS 전체 허용, 키는 Secrets 에만)
+- Edge Function: [`supabase/functions/check-api-quotas/index.ts`](supabase/functions/check-api-quotas/index.ts) — 배포 주소 `https://fbmgkbspiswuekvlhpth.supabase.co/functions/v1/check-api-quotas` (허용 Origin 만 CORS · `APP_ACCESS_KEY` 로 `x-app-key` 검증, API 키는 Secrets 에만)
 - 테이블: `rooms`, `assistants`, `invites`, `messages`, `api_quotas`, `api_quota_runs`
 - Realtime: `messages`, `assistants`, `rooms`, `api_quotas`, `api_quota_runs` (publication 등록, `replica identity full`)
 - 함수: `verify_invite`, `redeem_invite`, `report_usage` (security definer)
 - 키: 브라우저에는 **anon(publishable) 공개 키만** 사용합니다. `service_role` 키는 저장소·코드·문서 어디에도 없습니다.
+
+## 보안 — Edge Function 접근 제한 (v1.6.7)
+
+공개 저장소 + 공개 anon 키 환경에서도 **함수 3종의 외부 호출**은 두 겹으로 막습니다
+(`check-api-quotas` · `get-upload-calendar` · `get-youtube-dashboard`, 각 `index.ts` 상단 '보안' 절).
+
+- **CORS**: `https://tae2-sudo.github.io` 와 로컬 개발(`http://localhost:*` · `http://127.0.0.1:*`)에만
+  `Access-Control-Allow-Origin` 을 돌려줍니다. 그 밖의 Origin 은 403 이고 CORS 헤더를 주지 않습니다.
+  다른 도메인도 쓰려면 함수 Secrets 에 `APP_ALLOWED_ORIGINS`(쉼표 구분)를 넣습니다.
+- **앱 접근 키(`x-app-key`)**: 함수 Secrets 에 `APP_ACCESS_KEY` 가 있으면 요청 헤더 `x-app-key` 가
+  같은 값일 때만 응답합니다(없거나 다르면 401). 설정하지 않으면 키 검증을 건너뛰어 **기존 동작 그대로**
+  이므로, 먼저 배포해도 화면이 끊기지 않습니다.
+- 화면은 **설정 → 보안 → 앱 접근 키**에 넣은 값을 이 기기 `localStorage('pickle_app_key')` 에만 두고,
+  세 함수 호출에 `x-app-key` 로 함께 보냅니다(서버·DB 로는 보내지 않음).
+
+권장 배포 순서
+
+```bash
+# 1) 함수 배포 — 이 시점에는 APP_ACCESS_KEY 가 없어 기존과 똑같이 동작한다
+supabase functions deploy check-api-quotas
+supabase functions deploy get-upload-calendar
+supabase functions deploy get-youtube-dashboard
+
+# 2) 앱(v1.6.7)을 연 뒤 화면 '설정 → 보안 → 앱 접근 키'에 긴 문자열을 넣고 저장
+
+# 3) 같은 값을 Secret 으로 넣어 키 검증을 켠다
+supabase secrets set APP_ACCESS_KEY=<2번에서 넣은 값>
+```
+
+시크릿은 함수 인스턴스가 새로 뜰 때 읽히므로, 곧바로 확인이 필요하면 함수를 한 번 더 배포하세요.
+
+- 테이블의 anon `delete` 권한까지 줄이려면 [`supabase/lock_rls_optional.sql`](supabase/lock_rls_optional.sql)(선택)을 참고하세요.
+  실행하면 '비서 삭제'·'회의실 삭제' 버튼은 동작하지 않습니다.
+- 이 조치는 **브라우저에서의 무단 호출**을 막습니다. anon 키는 공개 키라 `curl` 같은 서버 호출은
+  `x-app-key` 로 막히지만, 키가 공유되면 다시 열립니다. 더 강한 잠금은 Supabase Auth 도입이 필요합니다.
 
 ## 테스트
 

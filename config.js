@@ -1,5 +1,8 @@
 /* 비서 통합 회의실 — Supabase 연결 설정
-   공개용 anon(publishable) 키만 들어 있습니다. service_role 키는 절대 넣지 마세요. */
+   공개용 anon(publishable) 키만 들어 있습니다. service_role 키는 절대 넣지 마세요.
+   ※ 아래 세 함수 주소는 Supabase Edge Function 입니다. 함수 Secrets 에 APP_ACCESS_KEY 를
+     설정하면, 화면은 localStorage 'pickle_app_key'(설정 → 보안)에 저장한 키를
+     x-app-key 헤더로 함께 보냅니다. */
 window.PICKLE_ROOM_CONFIG = {
   supabaseUrl: 'https://fbmgkbspiswuekvlhpth.supabase.co',
   supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZibWdrYnNwaXN3dWVrdmxocHRoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTU2NzMyNjcsImV4cCI6MjExMTI0OTI2N30.ftVWRn_MyS4pk0gSU9HULUvS-vmjbvgWa2LPENv_1JY',
@@ -13,5 +16,5 @@ window.PICKLE_ROOM_CONFIG = {
   /* 📺 유튜브-대시보드 방이 두 채널(별별해외이슈·ショッと見て)의 YouTube Data·Analytics 통계를 읽어오는 Edge Function.
      OAuth 클라이언트 시크릿과 두 채널의 리프레시 토큰은 이 함수의 Secrets 에만 있습니다. */
   youtubeFunctionUrl: 'https://fbmgkbspiswuekvlhpth.supabase.co/functions/v1/get-youtube-dashboard',
-  appVersion: '1.6.6'
+  appVersion: '1.6.7'
 };

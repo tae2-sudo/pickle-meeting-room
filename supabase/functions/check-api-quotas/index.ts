@@ -5,7 +5,8 @@
 //  · keys.json 의 제공자들을 실제로 호출해 남은 무료 한도/잔여량/리셋 시각을 잰다.
 //  · 결과는 public.api_quotas (1제공자=1행) 에 upsert, 실행 1건을 public.api_quota_runs 에 남긴다.
 //  · API 키는 이 함수의 Edge Function Secrets 에만 있고, 코드·응답·DB 어디에도 쓰지 않는다.
-//  · CORS: 브라우저에서 직접 호출할 수 있게 Access-Control-Allow-Origin: *
+//  · 보안: 허용한 Origin(https://tae2-sudo.github.io · 로컬 개발)에만 CORS 를 열고,
+//    Secrets 에 APP_ACCESS_KEY 가 있으면 x-app-key 헤더가 맞아야 응답한다(아래 '보안' 절).
 //  · 무료 한도 보호: 리셋 전 '한도 초과' 제공자와 Gemini 계열(6시간 스로틀)은 재호출하지 않고
 //    직전 실측값을 그대로 유지한다(carried). 45초 안에 다시 눌리면 실측 없이 캐시만 돌려준다.
 // ──────────────────────────────────────────────────────────────
@@ -13,12 +14,68 @@
 
 type Dict = Record<string, any>;
 
-const CORS_HEADERS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Max-Age": "86400",
-};
+// ────────────────────────────── 보안: CORS · 앱 접근 키 ──────────────────────────────
+// 이 함수는 Secrets 의 키로 한도가 있는 외부 API 를 대신 호출하고 그 결과를 DB 에 쓴다.
+// 아무 사이트나 브라우저에서 부를 수 없도록 (1) 허용한 Origin 에만 CORS 를 열고
+// (2) Secrets 에 APP_ACCESS_KEY 가 있을 때는 x-app-key 헤더가 맞아야 응답한다.
+// · APP_ACCESS_KEY 미설정 → 키 검증 생략(기존 동작 그대로 · 배포 중 장애 방지)
+// · APP_ALLOWED_ORIGINS(선택) → 쉼표로 구분해 허용 Origin 을 더 넣을 수 있다
+//   (예: 'https://example.com,https://foo.github.io')
+const ALLOWED_ORIGINS = ["https://tae2-sudo.github.io"];
+const LOCAL_ORIGIN_RE = /^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d{1,5})?$/;
+const APP_ACCESS_KEY = (Deno.env.get("APP_ACCESS_KEY") || "").trim();
+
+function isAllowedOrigin(origin: string): boolean {
+  if (!origin) return false;
+  if (LOCAL_ORIGIN_RE.test(origin)) return true;
+  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  return (Deno.env.get("APP_ALLOWED_ORIGINS") || "")
+    .split(",")
+    .map((s) => s.trim().replace(/\/$/, ""))
+    .filter(Boolean)
+    .includes(origin);
+}
+
+function corsHeaders(req: Request): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-app-key",
+    "Access-Control-Max-Age": "86400",
+    // Origin·앱 키에 따라 응답이 달라지므로 중간 캐시가 섞이지 않게 한다
+    Vary: "Origin, x-app-key",
+  };
+  const origin = req.headers.get("origin") || "";
+  if (isAllowedOrigin(origin)) headers["Access-Control-Allow-Origin"] = origin;
+  return headers;
+}
+
+function appKeyMatches(got: string): boolean {
+  if (!APP_ACCESS_KEY) return true; // 미설정 = 기존 동작 유지
+  if (got.length !== APP_ACCESS_KEY.length) return false;
+  let diff = 0; // 길이를 먼저 맞춘 뒤 시간 차이를 줄이는 비교
+  for (let i = 0; i < got.length; i++) diff |= got.charCodeAt(i) ^ APP_ACCESS_KEY.charCodeAt(i);
+  return diff === 0;
+}
+
+// 허용하지 않은 Origin 이면 403 (본문 없음 · CORS 헤더도 주지 않는다)
+function originRejected(req: Request): Response | null {
+  const origin = req.headers.get("origin") || "";
+  if (!origin || isAllowedOrigin(origin)) return null;
+  return new Response(null, { status: 403, headers: corsHeaders(req) });
+}
+
+// Origin 검사 → 앱 키 검사. 통과하면 null.
+function rejectUnauthorized(req: Request): Response | null {
+  const blocked = originRejected(req);
+  if (blocked) return blocked;
+  if (!appKeyMatches((req.headers.get("x-app-key") || "").trim())) {
+    return new Response(
+      JSON.stringify({ ok: false, error: "unauthorized", message: "x-app-key 헤더가 필요합니다." }),
+      { status: 401, headers: { ...corsHeaders(req), "Content-Type": "application/json; charset=utf-8" } },
+    );
+  }
+  return null;
+}
 
 const HTTP_TIMEOUT = 40_000;
 const PROBE_CONCURRENCY = 5; // 무료 등급 동시 요청 제한을 피하려고 5개씩만 동시에 호출한다
@@ -1531,17 +1588,21 @@ async function runProbes(): Promise<Dict> {
 // 같은 인스턴스에서 동시에 두 번 돌지 않게
 let inflight: Promise<Dict> | null = null;
 
-function jsonResponse(data: any, status = 200, extraHeaders: Dict = {}): Response {
+function jsonResponse(req: Request, data: any, status = 200, extraHeaders: Dict = {}): Response {
   return new Response(JSON.stringify(data, null, 2), {
     status,
-    headers: { ...CORS_HEADERS, "Content-Type": "application/json; charset=utf-8", ...extraHeaders },
+    headers: { ...corsHeaders(req), "Content-Type": "application/json; charset=utf-8", ...extraHeaders },
   });
 }
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
-    return new Response("ok", { status: 200, headers: CORS_HEADERS });
+    const blocked = originRejected(req);
+    if (blocked) return blocked;
+    return new Response("ok", { status: 200, headers: corsHeaders(req) });
   }
+  const denied = rejectUnauthorized(req);
+  if (denied) return denied;
 
   const t0 = nowMs();
   try {
@@ -1562,6 +1623,7 @@ Deno.serve(async (req: Request) => {
           }
         }
         return jsonResponse(
+          req,
           {
             ok: true,
             ran: false,
@@ -1592,10 +1654,11 @@ Deno.serve(async (req: Request) => {
       });
     }
     const result = await inflight;
-    return jsonResponse(result, 200, { "X-Quota-Run": "fresh", "X-Quota-Ms": String(nowMs() - t0) });
+    return jsonResponse(req, result, 200, { "X-Quota-Run": "fresh", "X-Quota-Ms": String(nowMs() - t0) });
   } catch (exc) {
     console.error("check-api-quotas 실패:", scrub(String((exc as Error)?.stack || exc)).slice(0, 1200));
     return jsonResponse(
+      req,
       {
         ok: false,
         error: scrub(String((exc as Error)?.message || exc)).slice(0, 400),
