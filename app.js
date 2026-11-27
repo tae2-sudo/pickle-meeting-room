@@ -1444,7 +1444,7 @@
       '<div class="y-big"><b>' + ytNum(st.subscribers) + '</b><span>구독자</span></div>' +
       '<div class="y-kv">' +
         '<span>총 조회수 <b>' + ytNum(st.views) + '</b></span>' +
-        '<span>영상 <b>' + ytNum(st.videos) + '</b> · 최근 평균 <b>' + ytNum(ch.avgViews) + '</b>회</span>' +
+        '<span>영상 <b>' + ytNum(st.videos) + '</b> · 평균 <b>' + ytNum(ch.avgViews) + '</b>회</span>' +
       '</div>' +
       (an.ok ? ytSparkHTML(an.days) : '') +
       '<div class="y-7d"><b>' + ytNum(an.views7d) + '</b> 최근 7<span>일</span>' + change + '</div>';
@@ -1522,14 +1522,16 @@
       (ch.videos || []).forEach(function (v) { rows.push({ ch: ch, v: v }); });
     });
     rows.sort(function (a, b) {
-      var at = ytParse(a.v.publishedAt), bt = ytParse(b.v.publishedAt);
-      return bt - at;
+      if (!!a.v.hot !== !!b.v.hot) return a.v.hot ? -1 : 1;   // 🔥 급상승을 먼저
+      return ytParse(b.v.publishedAt) - ytParse(a.v.publishedAt);
     });
-    var limit = ytState.filter === 'all' ? 12 : 20;
+    var narrow = false;
+    try { narrow = window.matchMedia('(max-width: 699px)').matches; } catch (e) { narrow = false; }
+    var limit = narrow ? 6 : (ytState.filter === 'all' ? 12 : 20);
     var shown = rows.slice(0, limit);
     if (sub) {
       var hotN = shown.filter(function (r) { return r.v.hot; }).length;
-      sub.textContent = shown.length + '개 표시 · 전체 ' + rows.length + '개' + (hotN ? ' · 🔥 ' + hotN : '');
+      sub.textContent = (hotN ? '🔥 ' + hotN + ' · ' : '') + shown.length + '개/' + rows.length + '개';
     }
     if (!shown.length) {
       el.innerHTML = '<div class="y-empty"><b>최근 영상이 없습니다</b><span>업로드 목록을 읽지 못했거나 아직 영상이 없습니다.</span></div>';
@@ -1609,9 +1611,7 @@
         sync.setAttribute('data-state', 'error');
       } else if (ytState.data) {
         sync.removeAttribute('data-state');
-        var sm = ytState.data.summary || {};
-        sync.innerHTML = '마지막 새로고침 <b>' + esc(ytClock(ytState.fetchedAt)) + '</b> (' + esc(relTime(ytState.fetchedAt)) + ')' +
-          ' · 구독 <b>' + ytNum(sm.subscribers) + '</b> · 7일 조회 <b>' + ytNum(sm.views7d) + '</b>' +
+        sync.innerHTML = '마지막 새로고침 <b>' + esc(ytClock(ytState.fetchedAt)) + '</b> (' + esc(relTime(ytState.fetchedAt)) + ') · 피클 토큰 0' +
           (ytState.error ? ' · <span style="color:#fdba74">일부 채널 읽기 실패</span>' : '');
       } else {
         sync.textContent = '유튜브에서 통계를 불러오는 중…';
