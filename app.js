@@ -1331,8 +1331,33 @@
   };
   var ytState = {
     data: null, fetchedAt: 0, lastAttempt: 0, error: null,
-    loading: false, started: false, inFlight: false, filter: 'all'
+    loading: false, started: false, inFlight: false, filter: 'all', theme: 'light'
   };
+  var YT_THEME_KEY = 'pickle.ytTheme';
+
+  /* 화면 밝기: 기본 밝은 화면, 고른 값은 이 기기에 기억된다 */
+  function ytLoadTheme() {
+    var t = 'light';
+    try { t = localStorage.getItem(YT_THEME_KEY) || 'light'; } catch (e) { /* 사생활 보호 모드 */ }
+    ytState.theme = t === 'dark' ? 'dark' : 'light';
+  }
+  function ytApplyTheme() {
+    var dark = ytState.theme === 'dark';
+    document.body.classList.toggle('yt-dark', dark);
+    var btn = $('#ytTheme');
+    if (btn) {
+      btn.setAttribute('aria-pressed', dark ? 'true' : 'false');
+      btn.setAttribute('aria-label', dark ? '밝은 화면으로 바꾸기' : '어두운 화면으로 바꾸기');
+      btn.title = dark ? '밝은 화면으로 바꾸기' : '어두운 화면으로 바꾸기';
+    }
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta && isYoutubeRoom()) meta.setAttribute('content', dark ? '#0B1120' : '#F1F5F9');
+  }
+  function ytToggleTheme() {
+    ytState.theme = ytState.theme === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem(YT_THEME_KEY, ytState.theme); } catch (e) { /* ignore */ }
+    ytApplyTheme();
+  }
 
   function isYoutubeRoom() {
     var r = currentRoom();
@@ -1411,15 +1436,40 @@
     }
   }
 
-  function ytSparkHTML(days) {
-    var list = days || [];
-    var max = 1;
-    list.forEach(function (d) { if (d.views > max) max = d.views; });
-    return '<div class="y-spark" aria-hidden="true">' + list.map(function (d) {
-      var h = Math.max(2, Math.round((d.views / max) * 26));
-      var cls = d.views > 0 ? '' : 'dim';
-      return '<i class="' + cls + '" style="height:' + h + 'px" title="' + esc(d.date) + ' · ' + ytNum(d.views) + '회"></i>';
-    }).join('') + '</div>';
+  function ytPad2(n) { return n < 10 ? '0' + n : '' + n; }
+  function ytDayKey(d) { return d.getFullYear() + '-' + ytPad2(d.getMonth() + 1) + '-' + ytPad2(d.getDate()); }
+  function ytMMDD(iso) {
+    var p = String(iso || '').split('-');
+    return p.length === 3 ? Number(p[1]) + '/' + Number(p[2]) : String(iso || '');
+  }
+  /* 최근 7일 일별 조회수 — 선명한 막대 + 최고값 표시 + 요일 숫자 */
+  function ytChartHTML(days) {
+    var list = (days || []).slice(-7);
+    if (!list.length) return '';
+    var max = 1, peak = null, todayKey = ytDayKey(new Date());
+    list.forEach(function (d) {
+      var v = Number(d.views) || 0;
+      if (v > max) { max = v; peak = d; }
+    });
+    var cols = list.map(function (d) {
+      var v = Number(d.views) || 0;
+      var h = v > 0 ? Math.max(12, Math.round((v / max) * 100)) : 0;
+      var isPeak = peak && v === (Number(peak.views) || 0);
+      var parts = String(d.date || '').split('-');
+      var dayNum = parts.length === 3 ? Number(parts[2]) : '';
+      return '<div class="y-bar-col' + (isPeak ? ' peak' : '') + '">' +
+        '<div class="y-bar-wrap">' +
+          (isPeak ? '<span class="y-peak">' + ytNum(v) + '</span>' : '') +
+          '<span class="y-bar' + (v > 0 ? '' : ' zero') + '" style="--h:' + h + '" title="' + esc(d.date) + ' · ' + ytNum(v) + '회"></span>' +
+        '</div>' +
+        '<span class="y-day' + (d.date === todayKey ? ' today' : '') + '">' + dayNum + '</span>' +
+      '</div>';
+    }).join('');
+    var first = list[0];
+    var month = String(first.date || '').split('-')[1];
+    return '<div class="y-chart" aria-hidden="true">' + cols + '</div>' +
+      '<div class="y-chart-cap"><span>최근 7일 추이' + (month ? ' (' + Number(month) + '월)' : '') + '</span>' +
+        '<span>' + (peak ? '최고 ' + ytMMDD(peak.date) + ' · ' + ytNum(peak.views) + '회' : '데이터 없음') + '</span></div>';
   }
 
   function ytCardHTML(ch) {
@@ -1437,23 +1487,24 @@
     }
     var change = '';
     if (an.ok && an.changePct != null) {
-      change = ' <span class="' + (an.changePct >= 0 ? 'up' : 'down') + '">' +
-        (an.changePct >= 0 ? '▲' : '▼') + Math.abs(an.changePct) + '%</span>';
+      change = ' <em class="' + (an.changePct >= 0 ? 'up' : 'down') + '">' +
+        (an.changePct >= 0 ? '▲' : '▼') + Math.abs(an.changePct) + '%</em>';
     }
-    var head = ch.error ? '' :
-      '<div class="y-big"><b>' + ytNum(st.subscribers) + '</b><span>구독자</span></div>' +
-      '<div class="y-kv">' +
-        '<span>총 조회수 <b>' + ytNum(st.views) + '</b></span>' +
-        '<span>영상 <b>' + ytNum(st.videos) + '</b> · 평균 <b>' + ytNum(ch.avgViews) + '</b></span>' +
-      '</div>' +
-      (an.ok ? ytSparkHTML(an.days) : '') +
-      '<div class="y-7d"><b>' + ytNum(an.views7d) + '</b> 최근 7<span>일</span>' + change + '</div>';
+    var body = ch.error
+      ? '<div class="y-empty err"><b>채널을 읽지 못했습니다</b><span>' + esc(ch.error) + '</span></div>'
+      : '<div class="y-stats">' +
+          '<div class="y-stat"><b>' + ytNum(st.subscribers) + '</b><span>구독자</span></div>' +
+          '<div class="y-stat"><b>' + (an.ok ? ytNum(an.views7d) : '—') + '</b><span>최근 7일 조회수' + change + '</span></div>' +
+        '</div>' +
+        (an.ok ? ytChartHTML(an.days) : '') +
+        '<p class="y-totals">총 조회수 <b>' + ytNum(st.views) + '</b> · 영상 <b>' + ytNum(st.videos) + '</b>개' +
+          (ch.avgViews != null ? ' · 영상당 평균 <b>' + ytNum(ch.avgViews) + '</b>회' : '') + '</p>';
 
     return '<a class="y-card" data-ch="' + esc(ch.key || '') + '" href="' + esc(ch.url || '#') + '" target="_blank" rel="noopener noreferrer">' +
-      '<div class="y-card-top"><span class="y-flag">' + (ch.flag || meta.flag) + '</span>' +
-        '<span class="y-name">' + esc(ch.label || meta.name) + '</span></div>' +
-      (ch.error ? '<div class="y-kv" style="color:#fda4af;font-weight:700">' + esc(ch.error) + '</div>' : head) +
-      (chips ? '<div class="y-card-foot">' + chips + '</div>' : '') +
+      '<div class="y-card-top"><span class="y-badge">' +
+        '<span class="y-flag">' + (ch.flag || meta.flag) + '</span>' + esc(ch.label || meta.name) + '</span></div>' +
+      body +
+      (chips ? '<div class="y-card-badges">' + chips + '</div>' : '') +
     '</a>';
   }
 
@@ -1461,7 +1512,7 @@
     var el = $('#ytChannels');
     if (!el) return;
     if (!ytState.data) {
-      el.innerHTML = '<div class="y-skel"><i style="height:150px"></i></div><div class="y-skel"><i style="height:150px"></i></div>';
+      el.innerHTML = '<div class="y-skel"><i></i></div><div class="y-skel"><i></i></div>';
       el.classList.remove('single');
       return;
     }
@@ -1475,12 +1526,20 @@
     el.innerHTML = list.map(ytCardHTML).join('');
   }
 
+  function ytCleanTitle(t) {
+    return String(t || '').replace(/\s*[|｜]\s*(별별해외이슈|ショッと見て)\s*$/, '').trim() || String(t || '');
+  }
+
   function ytVideoRowHTML(ch, v) {
     var meta = ytMetaOf(ch.key);
-    var pills = '<span class="y-pill ch" data-ch="' + esc(ch.key || '') + '">' + (ch.flag || meta.flag) + ' ' + esc(ch.label || meta.name) + '</span>';
-    if (v.hot) pills += '<span class="y-pill hot">🔥 급상승</span>';
-    var pcls = v.privacy === 'scheduled' ? 'scheduled' : (v.privacy || 'public');
-    pills += '<span class="y-pill ' + esc(pcls) + '">' + esc(v.privacyIcon || '') + ' ' + esc(v.privacyLabel || '공개') + '</span>';
+    var key = esc(ch.key || '');
+    var isShort = !!v.isShort;
+    var tags = '<span class="y-pill" data-ch="' + key + '">' + (ch.flag || meta.flag) + ' ' + esc(ch.label || meta.name) + '</span>';
+    if (v.hot) tags += '<span class="y-pill hot">🔥 급상승' + (v.vsAvg ? ' ' + v.vsAvg + '배' : '') + '</span>';
+    if (v.privacy && v.privacy !== 'public') {
+      var pcls = v.privacy === 'scheduled' ? 'scheduled' : v.privacy;
+      tags += '<span class="y-pill ' + esc(pcls) + '">' + esc(v.privacyIcon || '') + ' ' + esc(v.privacyLabel || '') + '</span>';
+    }
     var when = v.privacy === 'scheduled' && v.scheduleAt
       ? '게시 ' + ytWhen(v.scheduleAt)
       : relTime(ytParse(v.publishedAt));
@@ -1489,21 +1548,21 @@
       var s = v.durationSeconds;
       dur = Math.floor(s / 60) + ':' + pad2(s % 60);
     }
-    var ratio = (v.hot && v.vsAvg) ? '<span class="hot-ratio">평균 ' + v.vsAvg + '배</span>' : '';
+    var views = Number(v.views) || 0;
+    var stat = '조회 <b>' + ytNum(v.views) + '</b> · 좋아요 <b>' + ytNum(v.likes) + '</b> · 댓글 <b>' + ytNum(v.comments) + '</b>';
+    if (views === 0) stat += ' · 집계 대기 중';
     return '<a class="y-vrow' + (v.hot ? ' hot' : '') + '" href="' + esc(v.url) + '" target="_blank" rel="noopener noreferrer">' +
-      '<span class="y-thumb">' +
+      '<span class="y-thumb' + (isShort ? '' : ' wide') + '">' +
         '<img src="' + esc(v.thumbnail) + '" alt="" loading="lazy" referrerpolicy="no-referrer">' +
         (dur ? '<span class="y-dur">' + dur + '</span>' : '') +
       '</span>' +
       '<span class="y-vbody">' +
-        '<span class="y-vtitle">' + esc(v.title || '—') + '</span>' +
-        '<span class="y-vmeta">' + pills + '<span>' + esc(when) + '</span></span>' +
-        '<span class="y-vstat">' +
-          '<span>👁 ' + ytNum(v.views) + '</span>' +
-          '<span>👍 ' + ytNum(v.likes) + '</span>' +
-          '<span>💬 ' + ytNum(v.comments) + '</span>' +
-          ratio +
+        '<span class="y-vrow-line">' +
+          '<span class="y-vtitle">' + esc(ytCleanTitle(v.title) || '—') + '</span>' +
+          '<span class="y-when">' + esc(when) + '</span>' +
         '</span>' +
+        '<span class="y-vtags">' + tags + '</span>' +
+        '<span class="y-vstat">' + stat + '</span>' +
       '</span>' +
     '</a>';
   }
@@ -1543,22 +1602,21 @@
   function ytCommentRowHTML(ch, c) {
     var meta = ytMetaOf(ch.key);
     var fresh = (Date.now() - ytParse(c.publishedAt)) < 24 * HOUR;
-    var initial = (c.author || '?').replace(/^@/, '').charAt(0).toUpperCase();
-    var avatar = c.authorThumb
-      ? '<span class="y-avatar"><img src="' + esc(c.authorThumb) + '" alt="" loading="lazy" referrerpolicy="no-referrer"></span>'
-      : '<span class="y-avatar">' + esc(initial) + '</span>';
-    return '<a class="y-crow' + (fresh ? ' fresh' : '') + '" href="' + esc(c.url) + '" target="_blank" rel="noopener noreferrer">' +
-      avatar +
-      '<span class="y-cbody">' +
-        '<span class="y-chead">' +
-          '<span class="y-cauthor">' + esc(c.author || '익명') + '</span>' +
-          (fresh ? '<span class="y-new">NEW</span>' : '') +
-          '<span class="y-pill ch" data-ch="' + esc(ch.key || '') + '">' + (ch.flag || meta.flag) + '</span>' +
-          '<span style="margin-left:auto;white-space:nowrap">' + esc(relTime(ytParse(c.publishedAt))) + '</span>' +
+    return '<a class="y-crow' + (fresh ? ' fresh' : '') + '" href="' + esc(c.url) + '" target="_blank" rel="noopener noreferrer"' +
+      ' aria-label="' + esc((c.author || '익명') + ' 님의 댓글에 유튜브에서 답글 달기 (새 탭)') + '">' +
+      '<span class="y-chead">' +
+        '<span class="y-cauthor">' + esc(c.author || '익명') + '</span>' +
+        (fresh ? '<span class="y-new">NEW</span>' : '') +
+        '<span class="y-ago">' + esc(relTime(ytParse(c.publishedAt))) + '</span>' +
+      '</span>' +
+      '<span class="y-ctext">' + esc(c.text || '') + '</span>' +
+      (c.videoTitle ? '<span class="y-cvid">🎬 ' + esc(ytCleanTitle(c.videoTitle)) + '</span>' : '') +
+      '<span class="y-cfoot">' +
+        '<span class="y-pill" data-ch="' + esc(ch.key || '') + '">' + (ch.flag || meta.flag) + ' ' + esc(ch.label || meta.name) + '</span>' +
+        '<span class="y-cfoot-r">' +
+          (c.likes ? '<span class="y-clike">👍 ' + ytNum(c.likes) + '</span>' : '') +
+          '<span class="y-reply">답글 달기 ↗</span>' +
         '</span>' +
-        '<span class="y-ctext">' + esc(c.text || '') + '</span>' +
-        '<span class="y-cvid">🎬 ' + esc(c.videoTitle || '영상') + '</span>' +
-        '<span class="y-cfoot">👍 ' + ytNum(c.likes) + (c.replyCount ? ' · 답글 ' + c.replyCount + '개(내 답글 없음)' : '') + ' · 답글 달기 ↗</span>' +
       '</span>' +
     '</a>';
   }
@@ -1578,7 +1636,9 @@
     });
     rows.sort(function (a, b) { return ytParse(b.c.publishedAt) - ytParse(a.c.publishedAt); });
     var shown = rows.slice(0, 12);
-    if (sub) sub.textContent = (rows.length ? rows.length + '건' : '없음') + ' · 채널당 최근 25건 확인';
+    var cnt = $('#ytCommentCount');
+    if (cnt) cnt.textContent = rows.length ? String(rows.length) : '';
+    if (sub) sub.textContent = rows.length ? '최신순' : '';
     if (!shown.length) {
       var anyErr = ytChannels().some(function (c) { return c.comments && c.comments.error; });
       el.innerHTML = '<div class="y-empty">' +
@@ -1593,6 +1653,7 @@
   function renderYoutube() {
     var root = $('#youtubeView');
     if (!root) return;
+    ytApplyTheme();
     var btn = $('#ytRefresh');
     if (btn) {
       btn.classList.toggle('spin', ytState.loading);
@@ -1611,8 +1672,8 @@
         sync.setAttribute('data-state', 'error');
       } else if (ytState.data) {
         sync.removeAttribute('data-state');
-        sync.innerHTML = '마지막 새로고침 <b>' + esc(ytClock(ytState.fetchedAt)) + '</b> (' + esc(relTime(ytState.fetchedAt)) + ') · 피클 토큰 0' +
-          (ytState.error ? ' · <span style="color:#fdba74">일부 채널 읽기 실패</span>' : '');
+        sync.innerHTML = '마지막 새로고침 <b>' + esc(ytClock(ytState.fetchedAt)) + '</b> · ' + esc(relTime(ytState.fetchedAt)) +
+          (ytState.error ? ' · <span class="y-warn-ink">일부 채널 읽기 실패</span>' : '');
       } else {
         sync.textContent = '유튜브에서 통계를 불러오는 중…';
       }
@@ -1637,6 +1698,8 @@
     }
     var refresh = $('#ytRefresh');
     if (refresh) refresh.addEventListener('click', function () { ytFetch(true); });
+    var theme = $('#ytTheme');
+    if (theme) theme.addEventListener('click', ytToggleTheme);
     var box = $('#youtubeView');
     if (box) {
       box.addEventListener('click', function (e) {
@@ -1683,7 +1746,7 @@
     var sBtn = $('#searchBtn');
     if (sBtn) sBtn.hidden = channel;
     var meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute('content', (cal || yt) ? '#0f1115' : '#f2f3f5');
+    if (meta) meta.setAttribute('content', cal ? '#0f1115' : (yt ? (ytState.theme === 'dark' ? '#0B1120' : '#F1F5F9') : '#f2f3f5'));
     if (channel) {
       $('#chatView').hidden = true;
       $('#dashboard').hidden = true;
@@ -2880,6 +2943,8 @@
     } catch (e) { /* older browser */ }
     try { pendingSlug = new URLSearchParams(location.search).get('room'); } catch (e) { pendingSlug = null; }
 
+    ytLoadTheme();
+    ytApplyTheme();
     bind();
     setConn('connecting');
     renderAll();
