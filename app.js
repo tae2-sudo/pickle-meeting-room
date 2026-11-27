@@ -1482,7 +1482,7 @@
     var pcls = v.privacy === 'scheduled' ? 'scheduled' : (v.privacy || 'public');
     pills += '<span class="y-pill ' + esc(pcls) + '">' + esc(v.privacyIcon || '') + ' ' + esc(v.privacyLabel || '공개') + '</span>';
     var when = v.privacy === 'scheduled' && v.scheduleAt
-      ? '예약 ' + ytWhen(v.scheduleAt)
+      ? '게시 ' + ytWhen(v.scheduleAt)
       : relTime(ytParse(v.publishedAt));
     var dur = '';
     if (v.durationSeconds) {
@@ -1529,7 +1529,7 @@
     var shown = rows.slice(0, limit);
     if (sub) {
       var hotN = shown.filter(function (r) { return r.v.hot; }).length;
-      sub.textContent = shown.length + '개' + (hotN ? ' · 🔥 ' + hotN : '') + ' / 최근 ' + rows.length + '개';
+      sub.textContent = shown.length + '개 표시 · 전체 ' + rows.length + '개' + (hotN ? ' · 🔥 ' + hotN : '');
     }
     if (!shown.length) {
       el.innerHTML = '<div class="y-empty"><b>최근 영상이 없습니다</b><span>업로드 목록을 읽지 못했거나 아직 영상이 없습니다.</span></div>';
@@ -1556,7 +1556,7 @@
         '</span>' +
         '<span class="y-ctext">' + esc(c.text || '') + '</span>' +
         '<span class="y-cvid">🎬 ' + esc(c.videoTitle || '영상') + '</span>' +
-        '<span class="y-cfoot">👍 ' + ytNum(c.likes) + (c.replyCount ? ' · 답글 ' + c.replyCount + '개(내 답글 없음)' : '') + ' · 답글 달러 가기 ↗</span>' +
+        '<span class="y-cfoot">👍 ' + ytNum(c.likes) + (c.replyCount ? ' · 답글 ' + c.replyCount + '개(내 답글 없음)' : '') + ' · 답글 달기 ↗</span>' +
       '</span>' +
     '</a>';
   }
