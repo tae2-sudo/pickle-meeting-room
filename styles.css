@@ -1568,6 +1568,8 @@ body.calendar-mode .stage, body.yt-mode .stage { padding-bottom: 0; }
   .c-chip { font-size: 8.5px; padding: 2px 1.5px; gap: 1px; }
   .c-chip .cf { font-size: 8px; }
   .c-day { padding: 4px 2px; }
+  /* 채널이 셋으로 늘어도 네 버튼이 한 줄에 들어가게 */
+  .c-filter button { font-size: 11px; padding: 8px 3px; }
 }
 
 /* ══════════════════════════════════════════════════════════════
