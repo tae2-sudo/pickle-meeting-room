@@ -1731,7 +1731,7 @@
     if (!state.rooms.length) {
       roomsEl.innerHTML = '<p class="set-hint">회의실을 불러오는 중…</p>';
     }
-    state.rooms.filter(function (r) { return r.slug !== QUOTA_SLUG && r.slug !== CAL_SLUG; }).forEach(function (r) {
+    state.rooms.filter(function (r) { return r.slug !== QUOTA_SLUG && r.slug !== CAL_SLUG && r.slug !== YT_SLUG; }).forEach(function (r) {
       var b = document.createElement('button');
       b.type = 'button';
       b.className = 'room-item' + (r.id === state.activeRoomId ? ' active' : '');
