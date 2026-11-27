@@ -17,6 +17,7 @@
     { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ],
   "shortcuts": [
-    { "name": "사용량 대시보드", "short_name": "사용량", "url": "./?view=dashboard" }
+    { "name": "사용량 대시보드", "short_name": "사용량", "url": "./?view=dashboard" },
+    { "name": "AI 팀 회의실", "short_name": "AI 회의", "url": "./?view=ai" }
   ]
 }

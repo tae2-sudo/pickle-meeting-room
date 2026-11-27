@@ -5,16 +5,16 @@
    v18: 📅 업로드-캘린더 채널방 (노션 일정 · 달력/타임라인) (v1.5.0)
    v23: 📺 유튜브-대시보드 채널방 (구독·조회·영상 성과·미응답 댓글) (v1.6.0)
    v29: 📺 유튜브 대시보드 고대비 리뉴얼 — v0 시안, 라이트/다크 토글 (v1.6.6)
-   v30: Edge Function CORS 제한 · x-app-key 헤더 (v1.6.7) */
-const CACHE = 'pickle-meeting-room-v30';
+   v31: 🏛️ AI 팀 회의실 — 5팀장 병렬 회의(고속 2·풀 5라운드) · 최종안 복사 (v1.7.0) */
+const CACHE = 'pickle-meeting-room-v31';
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=1.6.7',
-  './config.js?v=1.6.7',
+  './styles.css?v=1.7.0',
+  './config.js?v=1.7.0',
   './vendor/supabase.js',
-  './app.js?v=1.6.7',
-  './manifest.webmanifest?v=1.6.7',
+  './app.js?v=1.7.0',
+  './manifest.webmanifest?v=1.7.0',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/maskable-512.png'

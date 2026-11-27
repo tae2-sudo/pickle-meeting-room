@@ -16,5 +16,8 @@ window.PICKLE_ROOM_CONFIG = {
   /* 📺 유튜브-대시보드 방이 두 채널(별별해외이슈·ショッと見て)의 YouTube Data·Analytics 통계를 읽어오는 Edge Function.
      OAuth 클라이언트 시크릿과 두 채널의 리프레시 토큰은 이 함수의 Secrets 에만 있습니다. */
   youtubeFunctionUrl: 'https://fbmgkbspiswuekvlhpth.supabase.co/functions/v1/get-youtube-dashboard',
-  appVersion: '1.6.7'
+  /* 🏛️ AI 팀 회의실 — 5팀장(기획·대본·팩트·썸네일/제목·리스크)을 라운드 단위로 병렬 호출하는 Edge Function.
+     AI 제공자 키(GEMINI/GROQ/COHERE/UPSTAGE/REQUESTY)는 이 함수의 Secrets 에만 있습니다. */
+  aiMeetingFunctionUrl: 'https://fbmgkbspiswuekvlhpth.supabase.co/functions/v1/run-ai-meeting',
+  appVersion: '1.7.0'
 };

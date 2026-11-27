@@ -10,10 +10,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="비서 회의실" />
   <title># 비서-통합-회의실</title>
-  <link rel="manifest" href="manifest.webmanifest?v=1.6.7" />
+  <link rel="manifest" href="manifest.webmanifest?v=1.7.0" />
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="styles.css?v=1.6.7" />
+  <link rel="stylesheet" href="styles.css?v=1.7.0" />
 </head>
 <body>
   <div class="app" id="app">
@@ -242,6 +242,11 @@
 
           <p class="y-foot">YouTube <b>Data API</b>·<b>Analytics API</b>를 Edge Function이 직접 읽습니다 · 피클 토큰 0 · OAuth 리프레시 토큰은 서버(Secrets)에만 있습니다.</p>
         </div>
+      </section>
+
+      <!-- ── 🏛️ AI 팀 회의실 (5팀장 병렬 회의 · API 키는 Edge Function Secrets) ── -->
+      <section class="airoom" id="aiMeetingView" hidden aria-label="AI 팀 회의실">
+        <div class="ai-scroll" id="aiScroll"></div>
       </section>
     </main>
 
@@ -526,7 +531,7 @@
             <button class="btn ghost" id="refreshBtn2">서버에서 새로고침</button>
           </div>
         </section>
-        <p class="app-version">비서 통합 회의실 · v<span id="appVersion">1.6.7</span> · Supabase 실시간</p>
+        <p class="app-version">비서 통합 회의실 · v<span id="appVersion">1.7.0</span> · Supabase 실시간</p>
       </div>
     </div>
   </div>
@@ -657,8 +662,8 @@
       });
     })();
   </script>
-  <script src="config.js?v=1.6.7"></script>
+  <script src="config.js?v=1.7.0"></script>
   <script src="vendor/supabase.js"></script>
-  <script src="app.js?v=1.6.7"></script>
+  <script src="app.js?v=1.7.0"></script>
 </body>
 </html>
