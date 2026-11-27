@@ -127,6 +127,7 @@
     loaded: false
   };
   var connState = 'connecting';
+  var pendingSlug = null;   // ?room=<slug> 딥링크 (예: ?room=upload-calendar)
   var sb = null;
   var channel = null;
   var retryTimer = null;
@@ -323,6 +324,10 @@
     });
     state.rooms = out;
     state.activeRoomId = (keepActive && byId[keepActive]) ? keepActive : (out[0] ? out[0].id : null);
+    if (pendingSlug) {
+      var target = out.find(function (r) { return r.slug === pendingSlug; });
+      if (target) { state.activeRoomId = target.id; pendingSlug = null; }
+    }
     state.updatedAt = Date.now();
   }
 
@@ -2476,6 +2481,7 @@
     try {
       if (new URLSearchParams(location.search).get('view') === 'dashboard') ui.dashboardOpen = true;
     } catch (e) { /* older browser */ }
+    try { pendingSlug = new URLSearchParams(location.search).get('room'); } catch (e) { pendingSlug = null; }
 
     bind();
     setConn('connecting');

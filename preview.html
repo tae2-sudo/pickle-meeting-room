@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>업로드-캘린더 뷰포트 미리보기</title>
+<style>
+  body { margin: 0; background: #2b2f36; font-family: system-ui, sans-serif; color: #cfd4e0; padding: 16px; }
+  h1 { font-size: 14px; margin: 0 0 12px; font-weight: 700; }
+  .row { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+  figure { margin: 0; }
+  figcaption { font-size: 11px; margin-bottom: 6px; color: #9aa3b4; }
+  iframe { border: 0; background: #0f1115; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.45); }
+</style>
+</head>
+<body>
+<h1>📅 업로드-캘린더 · 뷰포트 미리보기 (임시 검증용)</h1>
+<div class="row">
+  <figure>
+    <figcaption>모바일 390 × 844 (Fold 7 접음)</figcaption>
+    <iframe src="./?room=upload-calendar" width="390" height="844" title="mobile"></iframe>
+  </figure>
+  <figure>
+    <figcaption>폴드 펼침 800 × 900</figcaption>
+    <iframe src="./?room=upload-calendar" width="800" height="900" title="fold"></iframe>
+  </figure>
+</div>
+</body>
+</html>
