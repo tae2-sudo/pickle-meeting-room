@@ -13,5 +13,5 @@ window.PICKLE_ROOM_CONFIG = {
   /* 📺 유튜브-대시보드 방이 두 채널(별별해외이슈·ショッと見て)의 YouTube Data·Analytics 통계를 읽어오는 Edge Function.
      OAuth 클라이언트 시크릿과 두 채널의 리프레시 토큰은 이 함수의 Secrets 에만 있습니다. */
   youtubeFunctionUrl: 'https://fbmgkbspiswuekvlhpth.supabase.co/functions/v1/get-youtube-dashboard',
-  appVersion: '1.6.2'
+  appVersion: '1.6.3'
 };

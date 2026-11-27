@@ -1444,7 +1444,7 @@
       '<div class="y-big"><b>' + ytNum(st.subscribers) + '</b><span>구독자</span></div>' +
       '<div class="y-kv">' +
         '<span>총 조회수 <b>' + ytNum(st.views) + '</b></span>' +
-        '<span>영상 <b>' + ytNum(st.videos) + '</b> · 평균 <b>' + ytNum(ch.avgViews) + '</b>회</span>' +
+        '<span>영상 <b>' + ytNum(st.videos) + '</b> · 평균 <b>' + ytNum(ch.avgViews) + '</b></span>' +
       '</div>' +
       (an.ok ? ytSparkHTML(an.days) : '') +
       '<div class="y-7d"><b>' + ytNum(an.views7d) + '</b> 최근 7<span>일</span>' + change + '</div>';
@@ -1523,6 +1523,7 @@
     });
     rows.sort(function (a, b) {
       if (!!a.v.hot !== !!b.v.hot) return a.v.hot ? -1 : 1;   // 🔥 급상승을 먼저
+      if (a.v.hot) return (b.v.vsAvg || 0) - (a.v.vsAvg || 0);  // 급상승 안에서는 평균 대비 높은 순
       return ytParse(b.v.publishedAt) - ytParse(a.v.publishedAt);
     });
     var narrow = false;
