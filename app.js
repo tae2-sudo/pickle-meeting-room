@@ -1411,7 +1411,8 @@
           (r.slug === CAL_SLUG ? ' cal' : '');
         var badge;
         if (r.slug === CAL_SLUG) {
-          if (calState.loading && !calState.items.length) badge = '동기화 중';
+          if (!calState.started && !calState.loading) badge = '달력';
+          else if (calState.loading && !calState.items.length) badge = '동기화 중';
           else if (calState.error && !calState.items.length) badge = '읽기 실패';
           else {
             var cs = calMonthStats();
@@ -2511,6 +2512,8 @@
     connectRealtime();
     loadRemote().then(function () {
       if (!ui.dashboardOpen) settleAtBottom();
+      // 📅 업로드-캘린더 일정은 방에 들어가기 전에 미리 받아 둔다(드로어 배지·첫 화면이 바로 채워지게)
+      calFetch(false);
     });
 
     setInterval(function () {

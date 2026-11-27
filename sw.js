@@ -3,15 +3,15 @@
    이미지·매니페스트는 캐시 우선.
    v11: 기준 한도에서 차감한 '예상 %'·게이지 표시 (v1.4.1)
    v18: 📅 업로드-캘린더 채널방 (노션 일정 · 달력/타임라인) (v1.5.0) */
-const CACHE = 'pickle-meeting-room-v21';
+const CACHE = 'pickle-meeting-room-v22';
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=1.5.3',
-  './config.js?v=1.5.3',
+  './styles.css?v=1.5.4',
+  './config.js?v=1.5.4',
   './vendor/supabase.js',
-  './app.js?v=1.5.3',
-  './manifest.webmanifest?v=1.5.3',
+  './app.js?v=1.5.4',
+  './manifest.webmanifest?v=1.5.4',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/maskable-512.png'
