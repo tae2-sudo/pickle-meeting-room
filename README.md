@@ -20,6 +20,70 @@
 - 기본 회의실 3개와 **보리(태희님 비서)** 가 시드되어 있어, 처음 열어도 살아 있는 회의실이 보입니다.
 - 서비스워커 캐시를 v5 로 올려 이전 `localStorage` 버전이 캐시로 남지 않게 했습니다.
 
+## 이번 버전(v1.7.0)에서 달라진 점 — 🏛️ AI 팀 회의실
+
+- 드로어의 `채널방` 목록 맨 앞에 **`# 🏛️ AI 팀 회의실`** 이 생겼습니다(DB 방이 아니라 화면 안의 도구라
+  SQL 시드가 필요 없습니다). 방에 들어가면 대화 작성창 대신 회의 화면이 열리고, `?view=ai` 딥링크로도 열립니다.
+- **다섯 팀장이 서로 다른 AI 로 동시에 답합니다.**
+
+  | 팀장 | 역할 | 제공자 · 모델 |
+  | --- | --- | --- |
+  | 🧭 기획 (헤드) | 트렌드·구조 설계, 최종안 정리 | Gemini · `gemini-3.5-flash-lite` |
+  | ✍️ 대본 | 카피·후킹·대본 | Groq · `openai/gpt-oss-120b` |
+  | 🧾 팩트 | 수치·단위·고유명사·TTS 발음 검수 | Cohere · `command-a-03-2025` |
+  | 🖼️ 썸네일·제목 | 제목 후보·썸네일 문구 | Upstage · `solar-pro4` |
+  | 🛡️ 리스크 | 정책·저작권·반대 논점 | Requesty · `google/gemma-4-31b-it` |
+
+- **모드 두 가지**
+  - `⚡ 고속 2라운드 (추천 · 1~2분)` — R1 개별 제안 → R2 교차 비평 + 팩트/발음 + 최종안 동시 확정
+  - `🔥 풀 5라운드 (신규 기획)` — R1 제안 → R2 상호 비평 → R3 대본 3안 → R4 팩트·발음 대조 → R5 최종 확정
+- **라운드 1회 = 함수 호출 1회**: Edge Function 이 타임아웃되지 않고, 화면은 라운드가 끝날 때마다
+  팀장별 답변·상태(완료/실패/시간초과)를 그립니다. 모델당 **20초 타임아웃**이고,
+  한 팀장이 실패해도(`429`·타임아웃·빈 응답·Secret 미설정) 나머지로 회의를 계속합니다
+  (`Promise.allSettled`, 실패 사유는 그 카드에 그대로 표시).
+- **완료 후 「📋 마지에게 보낼 최종안 복사」**: 헤드(기획)의 최종안에서
+  **제목 · 훅 · 타임라인/대본 · TTS 문구 · 팩트 포인트** 를 뽑아 깔끔한 마크다운으로 원클릭 복사합니다
+  (모드·실행 시각·참여 팀장·실패 사유·참고 메모·팀장별 최종 발언 포함). `회의 전문 복사` 는 라운드 전체 기록입니다.
+- 회의 결과는 **이 기기 `localStorage` 에만** 남습니다(서버·DB 로 보내지 않음). 새로고침해도 마지막 회의가 그대로 보입니다.
+- API 키는 함수 Secrets 에만 있고 브라우저로 오지 않습니다. CORS 는 `https://tae2-sudo.github.io`·로컬만,
+  `APP_ACCESS_KEY` 를 설정하면 `x-app-key` 까지 확인합니다(다른 Edge Function 3종과 같은 규칙).
+- 자산 버전 `1.7.0`, 서비스워커 캐시 `v31`.
+
+### 배포(처음 한 번)
+
+```bash
+# 1) 함수가 쓸 AI 키 5개를 Secrets 에 넣는다(이미 있는 키는 그대로 두면 된다)
+supabase secrets set \
+  GEMINI_API_KEY=<AI Studio 키> \
+  GROQ_API_KEY=<Groq 키> \
+  COHERE_API_KEY=<Cohere 키> \
+  UPSTAGE_API_KEY=<Upstage 키> \
+  REQUESTY_API_KEY=<Requesty 키>
+
+# 2) 함수 배포
+supabase functions deploy run-ai-meeting
+
+# 3) 배포 확인 — 외부 API 를 부르지 않아 한도를 쓰지 않는다
+python3 tests/ai_meeting_check.py
+```
+
+`APP_ACCESS_KEY`(v1.6.7 보안 PR)를 쓰는 경우 화면 `설정 → 보안 → 앱 접근 키` 에 넣은 값을
+그대로 Secret 으로 두면 이 함수도 같은 키로 호출됩니다. 키가 없으면 오늘 쓰는 키만으로 동작합니다.
+
+### 함수 계약
+
+- `GET /functions/v1/run-ai-meeting` — 팀장 명단·모델·`secretSet`·모드 정의(한도 소모 없음)
+- `POST /functions/v1/run-ai-meeting`
+  ```json
+  { "topic": "소재", "notes": "참고 링크·메모", "mode": "fast" | "full", "round": 1,
+    "history": [{ "round": 1, "title": "개별 제안",
+                  "results": [{ "id": "plan", "name": "기획", "ok": true, "text": "..." }] }] }
+  ```
+  → `{ ok, mode, round, totalRounds, roundTitle, final, elapsedMs, okCount, failCount, missing[], results[] }`
+  (`results[]` 는 팀장별 `ok`·`ms`·`text`·`error`·`errorCode`: `limited`·`timeout`·`empty`·`secret_missing`·`http`·`network`)
+- 함수는 상태를 저장하지 않습니다. 앞선 라운드 기록은 화면이 `history` 로 넘기고, 함수가 길이를 잘라 프롬프트에 넣습니다
+  (팀장 1명당 2,000자 · 전체 9,000자).
+
 ## 이번 버전(v1.6.0)에서 달라진 점 — 📺 유튜브-대시보드 채널방
 
 - 비서 회의실과 분리된 **채널방 `# 📺 유튜브-대시보드`** 를 추가했습니다. 드로어의 `채널방` 목록에

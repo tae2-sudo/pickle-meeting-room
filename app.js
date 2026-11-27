@@ -143,7 +143,8 @@
     searchOpen: false,
     editingId: null,
     promptHandler: null,
-    loaded: false
+    loaded: false,
+    aiOpen: false        // 🏛️ AI 팀 회의실 화면
   };
   var connState = 'connecting';
   var pendingSlug = null;   // ?room=<slug> 딥링크 (예: ?room=upload-calendar)
@@ -543,6 +544,13 @@
     var c = counts();
     $('#roomTitle').textContent = room ? room.name : '회의실';
     document.title = room ? '# ' + room.name : '# 비서-통합-회의실';
+    if (ui.aiOpen) {
+      $('#roomTitle').textContent = '🏛️ AI 팀 회의실';
+      document.title = '# 🏛️ AI 팀 회의실';
+      $('#roomMeta').textContent = aiRunLabel();
+      $('#memberCount').textContent = String(AI_LEADERS.length);
+      return;
+    }
     if (room && room.slug === CAL_SLUG) {
       var cs = calMonthStats();
       $('#roomMeta').textContent = (calState.loading && !calState.items.length)
@@ -1735,15 +1743,751 @@
     try { return window.matchMedia('(max-width: 699px)').matches; } catch (e) { return false; }
   }
 
+  /* ──────────────────────────────────────────────────────────────
+     🏛️ AI 팀 회의실 — 5팀장 병렬 회의 (R1=1요청 · Edge Function run-ai-meeting)
+     · 주제를 넣으면 5팀장(기획·대본·팩트·썸네일/제목·리스크)이 라운드마다
+       서로 다른 AI 로 동시에 답하고, 화면은 라운드가 끝날 때마다 결과를 그린다.
+     · API 키는 Supabase Secrets 에만 있고 브라우저로 오지 않는다.
+     · 마지막 라운드의 기획(헤드) 답변에서 제목·훅·타임라인·TTS·팩트를 뽑아
+       「📋 마지에게 보낼 최종안 복사」 한 번으로 마크다운을 복사한다.
+     · 회의 결과는 이 기기 localStorage 에만 남는다(서버·DB 로 보내지 않음).
+     ─────────────────────────────────────────────────────────────── */
+  var AI_STORE = 'pickle-meeting-room.ai-meeting.v1';
+  var AI_MODES = {
+    fast: {
+      label: '⚡ 고속 2라운드', hint: '추천 · 1~2분', total: 2,
+      titles: ['개별 제안', '교차 비평 + 최종 확정']
+    },
+    full: {
+      label: '🔥 풀 5라운드', hint: '신규 기획', total: 5,
+      titles: ['개별 제안', '상호 비평', '대본 3안', '팩트·발음 대조', '최종 확정']
+    }
+  };
+  /* 서버(GET /run-ai-meeting) 명단과 같은 순서·id — 응답 전 화면 표시용 */
+  var AI_LEADERS = [
+    { id: 'plan', name: '기획', emoji: '🧭', role: '트렌드·구조', provider: 'Gemini', head: true },
+    { id: 'script', name: '대본', emoji: '✍️', role: '카피·후킹', provider: 'Groq' },
+    { id: 'fact', name: '팩트', emoji: '🧾', role: '수치·발음 검수', provider: 'Cohere' },
+    { id: 'thumb', name: '썸네일·제목', emoji: '🖼️', role: '제목·문구', provider: 'Upstage' },
+    { id: 'risk', name: '리스크', emoji: '🛡️', role: '정책·반대 논점', provider: 'Requesty' }
+  ];
+
+  var aiState = {
+    open: false,
+    topic: '',
+    notes: '',
+    mode: 'fast',
+    rounds: [],          // [{ n, title, status, results, elapsedMs, okCount, error }]
+    running: false,
+    stopped: false,
+    startedAt: 0,
+    finishedAt: 0,
+    error: null,
+    missing: []
+  };
+  var aiAbort = null;    // 진행 중 요청 취소용
+
+  function aiLeaderMeta(id) {
+    return AI_LEADERS.filter(function (l) { return l.id === id; })[0] || { id: id, name: id, emoji: '🤖', role: '', provider: '' };
+  }
+  function aiMode() { return AI_MODES[aiState.mode] || AI_MODES.fast; }
+  function aiTotal() { return aiMode().total; }
+
+  function aiLoad() {
+    var raw = null;
+    try { raw = localStorage.getItem(AI_STORE); } catch (e) { raw = null; }
+    if (!raw) return;
+    try {
+      var d = JSON.parse(raw);
+      if (!d || typeof d !== 'object') return;
+      aiState.topic = String(d.topic || '');
+      aiState.notes = String(d.notes || '');
+      aiState.mode = d.mode === 'full' ? 'full' : 'fast';
+      aiState.rounds = Array.isArray(d.rounds) ? d.rounds.slice(-6) : [];
+      aiState.startedAt = Number(d.startedAt) || 0;
+      aiState.finishedAt = Number(d.finishedAt) || 0;
+      aiState.missing = Array.isArray(d.missing) ? d.missing : [];
+    } catch (e) { /* 깨진 저장값은 무시 */ }
+  }
+  var aiSaveTimer = null;
+  function aiSaveSoon() {
+    clearTimeout(aiSaveTimer);
+    aiSaveTimer = setTimeout(aiSave, 400);
+  }
+  function aiSave() {
+    try {
+      localStorage.setItem(AI_STORE, JSON.stringify({
+        topic: aiState.topic,
+        notes: aiState.notes,
+        mode: aiState.mode,
+        rounds: aiState.rounds.map(function (r) {
+          return {
+            n: r.n, title: r.title, status: r.status, elapsedMs: r.elapsedMs,
+            okCount: r.okCount, error: r.error,
+            results: (r.results || []).map(function (x) {
+              return { id: x.id, name: x.name, emoji: x.emoji, role: x.role, provider: x.provider, model: x.model, head: x.head, ok: x.ok, ms: x.ms, text: x.text, error: x.error, errorCode: x.errorCode, warning: x.warning };
+            })
+          };
+        }),
+        startedAt: aiState.startedAt,
+        finishedAt: aiState.finishedAt,
+        missing: aiState.missing
+      }));
+    } catch (e) { /* 저장 실패는 조용히 */ }
+  }
+
+  /* ── 화면 열기/닫기 ───────────────────────────────────────── */
+  function openAiRoom() {
+    aiState.open = true;
+    ui.aiOpen = true;
+    closeDrawer();
+    renderAll();
+    var sc = $('#aiScroll');
+    if (sc) sc.scrollTop = 0;
+    if (!aiState.topic) {
+      var t = $('#aiTopic');
+      if (t) setTimeout(function () { try { t.focus(); } catch (e) { /* ignore */ } }, 120);
+    }
+  }
+  function closeAiRoom() {
+    aiState.open = false;
+    ui.aiOpen = false;
+    renderAll();
+  }
+
+  /* ── 상태 문구 ───────────────────────────────────────────── */
+  function aiRunLabel() {
+    if (aiState.running) {
+      var cur = aiState.rounds.filter(function (r) { return r.status === 'running'; })[0];
+      return cur
+        ? 'R' + cur.n + '/' + aiTotal() + ' · ' + cur.title + ' 진행 중…'
+        : '준비 중…';
+    }
+    if (aiState.stopped) {
+      var stopped = aiState.rounds.filter(function (r) { return r.status === 'done' || r.status === 'stopped'; });
+      return '중지됨 · R' + (stopped.length ? stopped[stopped.length - 1].n : 1) + '까지 진행 · 결과는 저장했습니다';
+    }
+    if (!aiState.rounds.length) return '주제를 넣고 회의를 시작하세요';
+    var last = aiState.rounds[aiState.rounds.length - 1];
+    if (!aiState.finishedAt) return 'R' + last.n + ' 결과까지 저장됨';
+    var secs = Math.max(1, Math.round((aiState.finishedAt - aiState.startedAt) / 1000));
+    var fails = aiFailCount();
+    return '완료 · ' + aiMode().label + ' · ' + (secs >= 60 ? Math.floor(secs / 60) + '분 ' + (secs % 60) + '초' : secs + '초') +
+      (fails ? ' · 실패 ' + fails + '명' : ' · 5명 전원 응답');
+  }
+  function aiFailCount() {
+    var n = 0;
+    (aiState.rounds || []).forEach(function (r) {
+      (r.results || []).forEach(function (x) { if (!x.ok) n++; });
+    });
+    return n;
+  }
+  function aiFinalRound() {
+    var done = aiState.rounds.filter(function (r) { return r.status === 'done'; });
+    if (!done.length) return null;
+    var last = done[done.length - 1];
+    return last.n === aiTotal() ? last : null;
+  }
+  function aiFinalText() {
+    var r = aiFinalRound();
+    if (!r) return '';
+    var list = r.results || [];
+    var head = list.filter(function (x) { return x.ok && (x.head || x.id === 'plan'); })[0];
+    if (head && head.text) return head.text;
+    var any = list.filter(function (x) { return x.ok && x.text; })[0];
+    return any ? any.text : '';
+  }
+  function aiFinalFromHead() {
+    var r = aiFinalRound();
+    if (!r) return false;
+    var head = (r.results || []).filter(function (x) { return x.ok && (x.head || x.id === 'plan'); })[0];
+    return !!(head && head.text);
+  }
+
+  /* 최종안 본문에서 '### 제목/훅/타임라인/TTS/팩트' 를 뽑는다 */
+  function aiParseFinal(text) {
+    var keys = ['제목', '훅', '타임라인', 'TTS', '팩트'];
+    var out = {};
+    var cur = null;
+    var buf = [];
+    String(text || '').split(/\r?\n/).forEach(function (line) {
+      var m = line.match(/^\s*#{1,6}\s*(제목|훅|타임라인|tts|팩트)\s*$/i);
+      if (m) {
+        if (cur) out[cur] = buf.join('\n').trim();
+        var k = m[1];
+        cur = (k.toLowerCase() === 'tts') ? 'TTS' : k;
+        buf = [];
+        return;
+      }
+      if (cur) buf.push(line);
+    });
+    if (cur) out[cur] = buf.join('\n').trim();
+    var got = keys.filter(function (k) { return out[k]; });
+    return { sections: out, ok: got.length >= 3, filled: got.length };
+  }
+
+  /* ── 복사용 마크다운 ─────────────────────────────────────── */
+  function aiWhenKorean(ts) {
+    if (!ts) return '';
+    var d = new Date(ts);
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
+      ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  }
+  function aiRosterLine() {
+    return AI_LEADERS.map(function (l) { return l.emoji + ' ' + l.name + '(' + l.provider + ')'; }).join(' · ');
+  }
+  function aiFailLines() {
+    var lines = [];
+    (aiState.rounds || []).forEach(function (r) {
+      (r.results || []).forEach(function (x) {
+        if (!x.ok) lines.push('- R' + r.n + ' ' + (x.emoji || '') + ' ' + x.name + ' — ' + (x.error || '응답 없음'));
+      });
+    });
+    return lines;
+  }
+  function aiFinalMarkdown() {
+    var text = aiFinalText();
+    var parsed = aiParseFinal(text);
+    var head = aiFinalFromHead();
+    var out = [];
+    out.push('# 🏛️ AI 팀 회의 최종안 — ' + (aiState.topic || '(주제 없음)'));
+    out.push('');
+    out.push('- 모드: ' + aiMode().label + ' (' + aiTotal() + '라운드)');
+    out.push('- 실행: ' + aiWhenKorean(aiState.startedAt) + (aiState.finishedAt ? ' ~ ' + aiWhenKorean(aiState.finishedAt) : ''));
+    out.push('- 참여: ' + aiRosterLine());
+    if (aiState.missing && aiState.missing.length) {
+      out.push('- **미설정 Secret**: ' + aiState.missing.join(', ') + ' (해당 팀장은 회의에서 빠졌습니다)');
+    }
+    var fails = aiFailLines();
+    if (fails.length) {
+      out.push('- 실패:');
+      fails.forEach(function (l) { out.push('  ' + l); });
+    }
+    if (aiState.notes) {
+      out.push('');
+      out.push('## 📎 참고 메모');
+      out.push(aiState.notes);
+    }
+    out.push('');
+    if (text && parsed.ok) {
+      out.push('## 📌 제목');
+      out.push(parsed.sections['제목']);
+      out.push('');
+      out.push('## 🪝 훅 (첫 3초)');
+      out.push(parsed.sections['훅']);
+      out.push('');
+      out.push('## 🎬 타임라인 / 대본');
+      out.push(parsed.sections['타임라인']);
+      out.push('');
+      out.push('## 🗣️ TTS 문구');
+      out.push(parsed.sections['TTS']);
+      out.push('');
+      out.push('## 🔍 팩트 포인트');
+      out.push(parsed.sections['팩트']);
+    } else if (text) {
+      out.push('## 🧾 최종안 (원문)');
+      out.push(text);
+    } else {
+      out.push('## 🧾 최종안');
+      out.push('(최종 라운드 결과가 없습니다)');
+    }
+    /* 팀장별 마지막 발언 */
+    var lastRound = aiFinalRound() || aiState.rounds[aiState.rounds.length - 1];
+    if (lastRound && (lastRound.results || []).length) {
+      out.push('');
+      out.push('## 🧾 팀장별 최종 발언');
+      (lastRound.results || []).forEach(function (x) {
+        var isHead = x.head || x.id === 'plan';
+        if (isHead && parsed.ok) return;   // 헤드 최종안은 위 절에 이미 그대로 있다
+        out.push('');
+        out.push('### ' + (x.emoji || '') + ' ' + x.name + ' (' + (x.provider || '') + ')');
+        out.push(x.ok ? String(x.text || '').trim() : '⚠️ 실패 — ' + (x.error || '응답 없음'));
+      });
+    }
+    out.push('');
+    out.push('---');
+    out.push('_출처: 비서 통합 회의실 · 🏛️ AI 팀 회의실 v' + APP_VERSION + (head ? '' : ' · 헤드 응답 실패로 대체 팀장 최종안 사용') + '_');
+    return out.join('\n');
+  }
+  function aiTranscriptMarkdown() {
+    var out = [];
+    out.push('# 🏛️ AI 팀 회의 전문 — ' + (aiState.topic || '(주제 없음)'));
+    out.push('');
+    out.push('- 모드: ' + aiMode().label + ' (' + aiTotal() + '라운드)');
+    out.push('- 실행: ' + aiWhenKorean(aiState.startedAt) + (aiState.finishedAt ? ' ~ ' + aiWhenKorean(aiState.finishedAt) : ''));
+    if (aiState.notes) { out.push('- 참고 메모: ' + aiState.notes.replace(/\n/g, ' / ')); }
+    (aiState.rounds || []).forEach(function (r) {
+      out.push('');
+      out.push('## R' + r.n + ' · ' + r.title + (r.elapsedMs ? ' (' + Math.round(r.elapsedMs / 100) / 10 + '초)' : ''));
+      if (r.error) out.push('> 라운드 오류: ' + r.error);
+      (r.results || []).forEach(function (x) {
+        out.push('');
+        out.push('### ' + (x.emoji || '') + ' ' + x.name + ' (' + (x.provider || '') + ' ' + (x.model || '') + ')');
+        if (x.ok) {
+          out.push(String(x.text || '').trim());
+          if (x.warning) out.push('> ⚠️ ' + x.warning);
+        } else {
+          out.push('⚠️ 실패 — ' + (x.error || '응답 없음'));
+        }
+      });
+    });
+    return out.join('\n');
+  }
+  function aiCopyText(text, okMsg) {
+    function fallback() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', 'readonly');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        toast(ok ? okMsg : '복사하지 못했습니다. 아래 회의 전문을 길게 눌러 복사하세요.');
+      } catch (e) {
+        toast('복사하지 못했습니다. 브라우저 권한을 확인하세요.');
+      }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { toast(okMsg); }, fallback);
+      return;
+    }
+    fallback();
+  }
+
+  /* ── 회의 실행 ───────────────────────────────────────────── */
+  function aiHeaders(extra) {
+    var h = {
+      apikey: CFG.supabaseAnonKey || '',
+      Authorization: 'Bearer ' + (CFG.supabaseAnonKey || '')
+    };
+    var key = appKey();
+    if (key) h['x-app-key'] = key;
+    if (extra) { for (var k in extra) { if (extra.hasOwnProperty(k)) h[k] = extra[k]; } }
+    return h;
+  }
+
+  async function aiCallRound(payload) {
+    var url = CFG.aiMeetingFunctionUrl || ((CFG.supabaseUrl || '') + '/functions/v1/run-ai-meeting');
+    if (!url || url.indexOf('http') !== 0) throw new Error('AI 회의 함수 주소가 설정되지 않았습니다.');
+    aiAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var init = {
+      method: 'POST',
+      headers: aiHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+      cache: 'no-store'
+    };
+    if (aiAbort) init.signal = aiAbort.signal;
+    var res = await fetch(url, init);
+    var data = null;
+    try { data = await res.json(); } catch (e) { data = null; }
+    if (!res.ok || !data || data.ok === false) {
+      var msg = (data && (data.message || data.error)) || ('HTTP ' + res.status);
+      var err = new Error(msg);
+      err.status = res.status;
+      err.fatal = true;
+      throw err;
+    }
+    return data;
+  }
+
+  function aiHistoryPayload() {
+    return aiState.rounds
+      .filter(function (r) { return r.status === 'done' && (r.results || []).length; })
+      .map(function (r) {
+        return {
+          round: r.n,
+          title: r.title,
+          results: (r.results || []).map(function (x) {
+            return { id: x.id, name: x.name, ok: !!x.ok, text: x.ok ? String(x.text || '') : '', error: x.error || null };
+          })
+        };
+      });
+  }
+
+  async function aiStart() {
+    if (aiState.running) return;
+    var topic = String(aiState.topic || '').trim();
+    if (!topic) {
+      toast('주제/소재를 먼저 입력하세요.');
+      var t = $('#aiTopic');
+      if (t) t.focus();
+      return;
+    }
+    aiState.running = true;
+    aiState.stopped = false;
+    aiState.error = null;
+    aiState.rounds = [];
+    aiState.missing = [];
+    aiState.startedAt = Date.now();
+    aiState.finishedAt = 0;
+    aiSave();
+    renderAiRoom();
+    renderTop();
+
+    var total = aiTotal();
+    for (var n = 1; n <= total; n++) {
+      if (aiState.stopped) break;
+      var entry = {
+        n: n,
+        title: aiMode().titles[n - 1],
+        status: 'running',
+        results: [],
+        startedAt: Date.now()
+      };
+      aiState.rounds.push(entry);
+      renderAiRoom();
+      renderTop();
+      aiFocusRound(n);
+      try {
+        var data = await aiCallRound({
+          topic: topic,
+          notes: String(aiState.notes || '').trim(),
+          mode: aiState.mode,
+          round: n,
+          history: aiHistoryPayload()
+        });
+        if (aiState.stopped) break;
+        entry.status = 'done';
+        entry.results = (data.results || []).map(function (x) {
+          var meta = aiLeaderMeta(x.id);
+          return {
+            id: x.id,
+            name: x.name || meta.name,
+            emoji: x.emoji || meta.emoji,
+            role: x.role || meta.role,
+            provider: x.provider || '',
+            model: x.model || '',
+            head: !!x.head,
+            ok: !!x.ok,
+            ms: x.ms != null ? Number(x.ms) : null,
+            text: String(x.text || ''),
+            error: x.error || null,
+            errorCode: x.errorCode || null,
+            warning: x.warning || null
+          };
+        });
+        entry.elapsedMs = Number(data.elapsedMs) || (Date.now() - entry.startedAt);
+        entry.okCount = entry.results.filter(function (x) { return x.ok; }).length;
+        if (Array.isArray(data.missing) && data.missing.length) aiState.missing = data.missing;
+      } catch (err) {
+        if (aiState.stopped) {
+          entry.status = 'stopped';
+          entry.error = '사용자가 중지했습니다.';
+          break;
+        }
+        entry.status = 'error';
+        entry.error = (err && err.message) || String(err);
+        if (err && err.fatal) {
+          aiState.error = entry.error;
+          break;
+        }
+      } finally {
+        aiAbort = null;
+      }
+      renderAiRoom();
+      aiSave();
+      if (entry.status === 'done' && !entry.okCount) {
+        aiState.error = '이 라운드에서 모든 팀장이 응답하지 못했습니다.';
+        break;
+      }
+    }
+
+    aiState.running = false;
+    aiState.finishedAt = Date.now();
+    if (aiState.rounds.some(function (r) { return r.status === 'running'; })) {
+      aiState.rounds.forEach(function (r) { if (r.status === 'running') r.status = 'stopped'; });
+    }
+    aiSave();
+    renderAiRoom();
+    renderTop();
+    renderDrawer();
+    if (!aiState.error && aiFinalRound()) {
+      toast('AI 팀 회의가 끝났습니다 · 최종안을 복사하세요.');
+      var f = document.querySelector('.ai-final');
+      var box = $('#aiScroll');
+      if (f && box && box.scrollTo) {
+        try { box.scrollTo({ top: Math.max(0, f.offsetTop - box.offsetTop - 8), behavior: 'smooth' }); }
+        catch (e) { box.scrollTop = Math.max(0, f.offsetTop - box.offsetTop - 8); }
+      }
+    }
+    else if (aiState.error) toast('회의 중단: ' + aiState.error);
+  }
+
+  function aiStop() {
+    if (!aiState.running) return;
+    aiState.stopped = true;
+    if (aiAbort) { try { aiAbort.abort(); } catch (e) { /* ignore */ } }
+    aiState.rounds.forEach(function (r) {
+      if (r.status === 'running') { r.status = 'stopped'; r.error = '사용자가 중지했습니다.'; }
+    });
+    toast('회의를 중지했습니다.');
+    renderAiRoom();
+  }
+
+  function aiReset() {
+    if (aiState.running) { toast('진행 중인 회의를 먼저 중지하세요.'); return; }
+    var keepMode = aiState.mode;
+    aiState.topic = '';
+    aiState.notes = '';
+    aiState.rounds = [];
+    aiState.startedAt = 0;
+    aiState.finishedAt = 0;
+    aiState.error = null;
+    aiState.missing = [];
+    aiState.stopped = false;
+    aiState.mode = keepMode;
+    aiSave();
+    renderAiRoom();
+    var t = $('#aiTopic');
+    if (t) t.focus();
+  }
+
+  /* ── 렌더링 ─────────────────────────────────────────────── */
+  function aiLeaderChip(l, status, note) {
+    return '<span class="ai-chip" data-state="' + status + '">' +
+      '<b>' + l.emoji + ' ' + esc(l.name) + '</b>' +
+      '<small>' + esc(l.provider) + (note ? ' · ' + esc(note) : '') + '</small>' +
+      '</span>';
+  }
+
+  function aiLeaderStatus(id) {
+    if (aiState.error && !aiState.rounds.length) return { state: 'fail', note: '중단' };
+    var running = aiState.rounds.filter(function (r) { return r.status === 'running'; })[0];
+    if (running) return { state: 'busy', note: 'R' + running.n + ' 응답 중' };
+    var last = null;
+    for (var i = aiState.rounds.length - 1; i >= 0; i--) {
+      var hit = (aiState.rounds[i].results || []).filter(function (x) { return x.id === id; })[0];
+      if (hit) { last = hit; break; }
+    }
+    if (!last) return { state: 'idle', note: '' };
+    if (!last.ok) {
+      var code = last.errorCode === 'timeout' ? '시간초과' : (last.errorCode === 'limited' ? '한도' : (last.errorCode === 'secret_missing' ? '키 없음' : '실패'));
+      return { state: 'fail', note: code };
+    }
+    return { state: 'ok', note: last.ms ? (Math.round(last.ms / 100) / 10) + '초' : '응답' };
+  }
+
+  function aiResultCard(x) {
+    var head = '<div class="ai-res-head">' +
+      '<span class="ai-res-name">' + (x.emoji || '🤖') + ' ' + esc(x.name) + '</span>' +
+      '<span class="ai-res-meta">' + esc(x.provider || '') + (x.model ? ' · ' + esc(x.model) : '') +
+      (x.ms ? ' · ' + (Math.round(x.ms / 100) / 10) + '초' : '') + '</span>' +
+      '<span class="ai-res-state" data-state="' + (x.ok ? 'ok' : 'fail') + '">' + (x.ok ? '완료' : '실패') + '</span>' +
+      '</div>';
+    if (!x.ok) {
+      return '<div class="ai-res" data-state="fail">' + head +
+        '<p class="ai-res-err">⚠️ ' + esc(x.error || '응답 없음') + '</p></div>';
+    }
+    var body = '<div class="ai-res-body">' + esc(String(x.text || '').trim()) + '</div>';
+    if (x.warning) body += '<p class="ai-res-warn">⚠️ ' + esc(x.warning) + '</p>';
+    if (x.head || x.id === 'plan') body += '<p class="ai-res-tag">헤드 · 최종안 형식</p>';
+    return '<div class="ai-res" data-state="ok">' + head + body + '</div>';
+  }
+
+  function aiRoundBlock(r) {
+    var state = r.status;
+    var label = state === 'running' ? '진행 중…' : (state === 'done' ? (r.okCount + '명 응답' + (r.results.length - r.okCount ? ' · ' + (r.results.length - r.okCount) + '명 실패' : '')) : (state === 'stopped' ? '중지됨' : '오류'));
+    var secs = r.elapsedMs ? ' · ' + (Math.round(r.elapsedMs / 100) / 10) + '초' : '';
+    var head = '<div class="ai-round-head">' +
+      '<span class="ai-round-no">R' + r.n + '</span>' +
+      '<h3>' + esc(r.title || '') + '</h3>' +
+      '<span class="ai-round-state" data-state="' + state + '">' + esc(label + secs) + '</span>' +
+      '</div>';
+    var body = '';
+    if (r.error) body += '<p class="ai-round-err">⚠️ ' + esc(r.error) + '</p>';
+    if (state === 'running' && !(r.results || []).length) {
+      body += '<div class="ai-wait"><span class="ai-spin" aria-hidden="true"></span> 5팀장이 동시에 답하는 중입니다 · 최대 20초</div>';
+    }
+    var results = r.results || [];
+    if (results.length) {
+      body += '<div class="ai-grid">' + results.map(function (x) { return aiResultCard(x); }).join('') + '</div>';
+    }
+    return '<section class="ai-round" data-state="' + state + '" data-n="' + r.n + '">' + head + body + '</section>';
+  }
+
+  function aiFinalBlock() {
+    if (!aiFinalRound()) return '';
+    var text = aiFinalText();
+    if (!text) return '';
+    var parsed = aiParseFinal(text);
+    var headUsed = aiFinalFromHead();
+    var secHtml = '';
+    if (parsed.ok) {
+      var defs = [
+        ['📌 제목', '제목'],
+        ['🪝 훅 (첫 3초)', '훅'],
+        ['🎬 타임라인 / 대본', '타임라인'],
+        ['🗣️ TTS 문구', 'TTS'],
+        ['🔍 팩트 포인트', '팩트']
+      ];
+      secHtml = defs.map(function (d) {
+        var v = parsed.sections[d[1]];
+        if (!v) return '';
+        return '<div class="ai-final-sec"><h4>' + d[0] + '</h4><div class="ai-final-text">' + esc(v) + '</div></div>';
+      }).join('');
+    } else {
+      secHtml = '<div class="ai-final-sec"><h4>🧾 최종안 (원문)</h4><div class="ai-final-text">' + esc(text) +
+        '</div><p class="ai-final-note">형식을 나누지 못해 원문으로 보여줍니다.</p></div>';
+    }
+    return '<section class="ai-final">' +
+      '<div class="ai-final-head">' +
+      '<div><h3>🏁 최종안</h3><p class="ai-final-sub">' +
+      (headUsed ? '기획(헤드) 팀장의 확정안' : '헤드 응답이 없어 대체 팀장의 최종안') +
+      ' · 이 기기에만 저장됩니다</p></div>' +
+      '<div class="ai-final-actions">' +
+      '<button type="button" class="ai-btn primary" data-ai="copy-final">📋 마지에게 보낼 최종안 복사</button>' +
+      '<button type="button" class="ai-btn ghost" data-ai="copy-all">회의 전문 복사</button>' +
+      '</div></div>' +
+      secHtml + '</section>';
+  }
+
+  function aiBodyHtml() {
+    var running = aiState.running;
+    var out = [];
+    out.push('<div class="ai-head">' +
+      '<div class="ai-head-text">' +
+      '<h2><span aria-hidden="true">🏛️</span> AI 팀 회의실</h2>' +
+      '<p class="ai-sub" data-state="' + (aiState.error ? 'error' : (running ? 'busy' : 'idle')) + '">' + esc(aiRunLabel()) + '</p>' +
+      '</div>' +
+      '<div class="ai-head-actions">' +
+      '<button type="button" class="ai-btn ghost" data-ai="reset"' + (running ? ' disabled' : '') + '>새 회의</button>' +
+      '<button type="button" class="ai-btn ghost" data-ai="close">돌아가기</button>' +
+      '</div></div>');
+
+    /* 팀장 명단 */
+    out.push('<div class="ai-roster">' + AI_LEADERS.map(function (l) {
+      var s = aiLeaderStatus(l.id);
+      return aiLeaderChip(l, s.state, s.note);
+    }).join('') + '</div>');
+
+    if (aiState.missing && aiState.missing.length) {
+      out.push('<p class="ai-warn">⚠️ Supabase Secret 미설정: <b>' + esc(aiState.missing.join(', ')) +
+        '</b> — 이 팀장들은 회의에서 빠집니다. 배포 안내는 README 의 <b>🏛️ AI 팀 회의실</b> 절을 보세요.</p>');
+    }
+
+    /* 입력 */
+    out.push('<section class="ai-card">' +
+      '<label class="ai-field"><span>주제 / 소재</span>' +
+      '<textarea id="aiTopic" rows="2" maxlength="2000" placeholder="예: GTA 6 PC판 미끼 악성코드 — 해외에서 난리 난 이유" ' +
+      (running ? 'disabled' : '') + '>' + esc(aiState.topic) + '</textarea></label>' +
+      '<label class="ai-field"><span>참고 링크 · 메모 <small>(선택)</small></span>' +
+      '<textarea id="aiNotes" rows="2" maxlength="4000" placeholder="원문 링크, 확인된 수치, 반드시 넣을 문구, 금지 사항" ' +
+      (running ? 'disabled' : '') + '>' + esc(aiState.notes) + '</textarea></label>' +
+      '<div class="ai-modes" role="group" aria-label="회의 모드">' +
+      ['fast', 'full'].map(function (m) {
+        var spec = AI_MODES[m];
+        var on = aiState.mode === m;
+        return '<button type="button" class="ai-modebtn" data-ai="mode:' + m + '" aria-pressed="' + (on ? 'true' : 'false') + '"' +
+          (running ? ' disabled' : '') + '>' +
+          '<b>' + spec.label + '</b><small>' + spec.hint + ' · ' + spec.total + '라운드</small></button>';
+      }).join('') +
+      '</div>' +
+      '<div class="ai-actions">' +
+      (running
+        ? '<button type="button" class="ai-btn danger" data-ai="stop">■ 회의 중지</button>'
+        : '<button type="button" class="ai-btn primary" data-ai="start">▶ 회의 시작</button>') +
+      '<span class="ai-time-hint">' + (aiState.mode === 'fast' ? '라운드당 최대 20초 · 대략 1~2분' : '라운드당 최대 20초 · 대략 3~5분') + '</span>' +
+      '</div></section>');
+
+    /* 오류 */
+    if (aiState.error) {
+      out.push('<p class="ai-error">⚠️ ' + esc(aiState.error) + '</p>');
+    }
+
+    /* 라운드 */
+    if (aiState.rounds.length) {
+      out.push('<div class="ai-rounds">' + aiState.rounds.map(aiRoundBlock).join('') + '</div>');
+    } else {
+      out.push('<div class="ai-empty">' +
+        '<p>아직 회의가 없습니다. 주제를 넣고 <b>회의 시작</b>을 누르면 5팀장이 라운드마다 동시에 답합니다.</p>' +
+        '<ul>' +
+        '<li><b>⚡ 고속 2라운드</b> — R1 개별 제안 → R2 교차 비평 + 최종 확정 (빠른 소재 검증·제목·대본)</li>' +
+        '<li><b>🔥 풀 5라운드</b> — R1 제안 → R2 비평 → R3 대본 3안 → R4 팩트·발음 대조 → R5 최종 확정 (신규 기획)</li>' +
+        '</ul></div>');
+    }
+
+    out.push(aiFinalBlock());
+
+    out.push('<p class="ai-foot">5팀장 병렬 호출 · 모델당 20초 타임아웃 · 한 명이 실패해도 회의는 계속됩니다 · ' +
+      'API 키는 Supabase Secrets 에만 있고 브라우저로 오지 않습니다</p>');
+    return out.join('');
+  }
+
+  function renderAiRoom() {
+    var box = $('#aiScroll');
+    if (!box) return;
+    box.innerHTML = aiBodyHtml();
+  }
+
+  /* 진행 중인 라운드가 화면 밖이면 그 라운드 머리로 스크롤한다 */
+  function aiFocusRound(n) {
+    var box = $('#aiScroll');
+    var el = document.querySelector('.ai-round[data-n="' + n + '"]');
+    if (!box || !el || !box.scrollTo) return;
+    var top = el.offsetTop - box.offsetTop - 8;
+    if (Math.abs(box.scrollTop - top) < 40) return;
+    try { box.scrollTo({ top: Math.max(0, top), behavior: 'smooth' }); }
+    catch (e) { box.scrollTop = Math.max(0, top); }
+  }
+
+  function bindAiRoom() {
+    var root = $('#aiMeetingView');
+    if (!root) return;
+    root.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-ai]');
+      if (!btn) return;
+      var act = btn.getAttribute('data-ai');
+      if (act === 'close') { closeAiRoom(); return; }
+      if (act === 'reset') { aiReset(); return; }
+      if (act === 'start') { aiStart(); return; }
+      if (act === 'stop') { aiStop(); return; }
+      if (act.indexOf('mode:') === 0) {
+        if (aiState.running) return;
+        aiState.mode = act.slice(5) === 'full' ? 'full' : 'fast';
+        aiSave();
+        renderAiRoom();
+        return;
+      }
+      if (act === 'copy-final') {
+        var md = aiFinalMarkdown();
+        aiCopyText(md, '📋 마지에게 보낼 최종안을 복사했습니다 (' + md.length.toLocaleString() + '자)');
+        return;
+      }
+      if (act === 'copy-all') {
+        aiCopyText(aiTranscriptMarkdown(), '회의 전문을 복사했습니다.');
+        return;
+      }
+    });
+    root.addEventListener('input', function (e) {
+      var id = e.target && e.target.id;
+      if (id === 'aiTopic') aiState.topic = e.target.value;
+      else if (id === 'aiNotes') aiState.notes = e.target.value;
+      else return;
+      aiSaveSoon();
+    });
+    /* 실패한 라운드만 다시 돌리는 대신, 같은 모드로 새 회의를 시작한다 */
+    root.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !aiState.running) closeAiRoom();
+    });
+  }
+
   /* 채널방과 회의실의 화면·컴포저를 서로 섮이지 않게 전환한다 */
   function applyRoomMode() {
-    var quota = isQuotaRoom();
-    var cal = isCalendarRoom();
-    var yt = isYoutubeRoom();
-    var channel = quota || cal || yt;
+    var ai = !!ui.aiOpen;
+    var quota = !ai && isQuotaRoom();
+    var cal = !ai && isCalendarRoom();
+    var yt = !ai && isYoutubeRoom();
+    var channel = quota || cal || yt || ai;
     document.body.classList.toggle('quota-mode', quota);
     document.body.classList.toggle('calendar-mode', cal);
     document.body.classList.toggle('yt-mode', yt);
+    document.body.classList.toggle('ai-mode', ai);
+    var av = $('#aiMeetingView');
+    if (av) av.hidden = !ai;
     var qv = $('#quotaView');
     if (qv) qv.hidden = !quota;
     var cv = $('#calendarView');
@@ -1759,7 +2503,7 @@
     var sBtn = $('#searchBtn');
     if (sBtn) sBtn.hidden = channel;
     var meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute('content', cal ? '#0f1115' : (yt ? (ytState.theme === 'dark' ? '#0B1120' : '#F1F5F9') : '#f2f3f5'));
+    if (meta) meta.setAttribute('content', (ai || cal) ? '#0f1115' : (yt ? (ytState.theme === 'dark' ? '#0B1120' : '#F1F5F9') : '#f2f3f5'));
     if (channel) {
       $('#chatView').hidden = true;
       $('#dashboard').hidden = true;
@@ -1800,6 +2544,8 @@
   }
 
   function goRoom(r) {
+    var wasAi = !!ui.aiOpen;
+    if (wasAi) { ui.aiOpen = false; aiState.open = false; }
     if (r.id !== state.activeRoomId) {
       state.activeRoomId = r.id;
       ui.search = '';
@@ -1811,6 +2557,7 @@
       toast('# ' + r.name + ((r.slug === QUOTA_SLUG || r.slug === CAL_SLUG || r.slug === YT_SLUG) ? ' 채널방으로 이동했습니다.' : ' 회의실로 이동했습니다.'));
     } else {
       closeDrawer();
+      if (wasAi) renderAll();
     }
   }
 
@@ -1835,6 +2582,17 @@
     if (chEl) {
       chEl.innerHTML = '';
       var qc = quotaCounts();
+      /* 🏛️ AI 팀 회의실 — DB 방이 아니라 화면 안의 도구라서 목록 맨 앞에 고정으로 둔다 */
+      var aiBtn = document.createElement('button');
+      aiBtn.type = 'button';
+      aiBtn.className = 'room-item channel ai' + (ui.aiOpen ? ' active' : '');
+      var aiBadge = aiState.running
+        ? 'R' + ((aiState.rounds.filter(function (r) { return r.status === 'running'; })[0] || {}).n || 1) + ' 진행 중'
+        : (aiFinalRound() ? '최종안 있음' : (aiState.rounds.length ? '중단됨' : '5팀장 회의'));
+      aiBtn.innerHTML = '<span class="hash">#</span><span class="rname">🏛️ AI 팀 회의실</span>' +
+        '<small>' + esc(aiBadge) + '</small>';
+      aiBtn.addEventListener('click', function () { openAiRoom(); });
+      chEl.appendChild(aiBtn);
       state.rooms.filter(function (r) { return r.slug === QUOTA_SLUG || r.slug === CAL_SLUG || r.slug === YT_SLUG; }).forEach(function (r) {
         var b = document.createElement('button');
         b.type = 'button';
@@ -1872,6 +2630,20 @@
     listEl.innerHTML = '';
     var room = currentRoom();
     var lbl = $('#drawerMembersLabel');
+    if (ui.aiOpen) {
+      if (lbl) lbl.textContent = 'AI 팀장';
+      $('#drawerMemberCount').textContent = AI_LEADERS.length;
+      AI_LEADERS.forEach(function (l) {
+        var st = aiLeaderStatus(l.id);
+        var row = document.createElement('div');
+        row.className = 'da-row';
+        row.innerHTML = '<span class="dot" data-state="' + (st.state === 'ok' ? 'ok' : (st.state === 'fail' ? 'risk' : 'unknown')) + '"></span>' +
+          '<span class="da-name">' + l.emoji + ' ' + esc(l.name) + ' — ' + esc(l.provider) + '</span>' +
+          '<span class="da-pct">' + esc(st.note || l.role) + '</span>';
+        listEl.appendChild(row);
+      });
+      return;
+    }
     if (isCalendarRoom()) {
       var todayList = calItemsOn(calTodayKey());
       if (lbl) lbl.textContent = '오늘 업로드';
@@ -1998,6 +2770,7 @@
     renderTop();
     renderDrawer();
     applyRoomMode();
+    if (ui.aiOpen) { renderAiRoom(); return; }
     if (isQuotaRoom()) { renderQuota(); return; }
     if (isCalendarRoom()) {
       if (!calState.started) {
@@ -2766,6 +3539,7 @@
 
     bindCalendar();
     bindYoutube();
+    bindAiRoom();
 
     $('#dashBody').addEventListener('click', function (e) {
       var btn = e.target.closest('[data-act="edit"]');
@@ -2967,12 +3741,15 @@
   /* ── boot ────────────────────────────────────────────────── */
   function boot() {
     try {
-      if (new URLSearchParams(location.search).get('view') === 'dashboard') ui.dashboardOpen = true;
+      var viewParam = new URLSearchParams(location.search).get('view');
+      if (viewParam === 'dashboard') ui.dashboardOpen = true;
+      if (viewParam === 'ai') { aiState.open = true; ui.aiOpen = true; }
     } catch (e) { /* older browser */ }
     try { pendingSlug = new URLSearchParams(location.search).get('room'); } catch (e) { pendingSlug = null; }
 
     ytLoadTheme();
     ytApplyTheme();
+    aiLoad();
     bind();
     setConn('connecting');
     renderAll();
@@ -3010,6 +3787,7 @@
       if (isQuotaRoom()) { renderTop(); renderQuota(); }
       else if (isCalendarRoom()) { renderTop(); }
       else if (isYoutubeRoom()) { renderTop(); }
+      else if (ui.aiOpen) { renderTop(); }
       else if (ui.dashboardOpen) renderDashboard();
       // 활동 시각이 오래된 비서의 온라인 표시 갱신
       var room = currentRoom();
