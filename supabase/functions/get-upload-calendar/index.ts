@@ -89,7 +89,8 @@ const HTTP_TIMEOUT = 20_000;
 
 const CHANNEL_META: Dict = {
   kr: { key: "kr", label: "별별해외이슈", flag: "🇰🇷", short: "KR" },
-  jp: { key: "jp", label: "ショッと見て", flag: "🇯🇵", short: "JP" },
+  jp: { key: "jp", label: "쇼츠 좀 봐", flag: "🇯🇵", short: "JP", alias: "ショッと見て" },
+  sk: { key: "sk", label: "숏까뜨", flag: "⭐", short: "SK" },
   etc: { key: "etc", label: "기타", flag: "🗓", short: "ETC" },
 };
 
@@ -290,17 +291,19 @@ function channelOf(text: string): { key: string; episode: string; rest: string }
   const segs = s.split(/[·•|]/).map((x) => x.trim()).filter(Boolean);
   const first = segs[0] || s;
   let key = "etc";
-  if (/별별\s*해외\s*이슈|별별해외이슈/.test(first) || /별별/.test(s) && !/ショッと/.test(first)) key = "kr";
+  if (/숏\s*까뜨/.test(first)) key = "sk";
+  if (/별별\s*해외\s*이슈|별별해외이슈/.test(first) || /별별/.test(s) && !/ショッと/.test(first) && key === "etc") key = "kr";
   if (/ショッと|ショット見て/.test(first)) key = "jp";
   if (key === "etc" && /별별해외이슈/.test(s)) key = "kr";
   if (/JP\s*\d+/i.test(s) && key === "etc") key = "jp";
+  if (/SK\s*\d+/i.test(s) && key === "etc") key = "sk";
   let episode = segs.length > 1 ? segs.slice(1).join(" · ") : "";
   if (!episode) {
-    const m = s.match(/(쇼츠\s*\d+|JP\s*\d+)/i);
+    const m = s.match(/(쇼츠\s*\d+|JP\s*\d+|SK\s*\d+)/i);
     episode = m ? m[1] : "";
   }
   // '쇼츠 12 팁 0원 …' 처럼 편 번호 뒤에 제목이 붙은 경우 편 코드와 나머지를 나눈다
-  const code = episode.match(/(쇼츠\s*\d+|JP\s*\d+)/i);
+  const code = episode.match(/(쇼츠\s*\d+|JP\s*\d+|SK\s*\d+)/i);
   const episodeCode = code ? code[1].replace(/\s+/g, " ") : episode;
   let rest = code ? episode.slice(code.index! + code[1].length) : episode;
   rest = rest.replace(/^[\s·\-–—:,，、()|]+/, "").trim();

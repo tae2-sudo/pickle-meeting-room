@@ -4,12 +4,12 @@
 --  SQL Editor 에 그대로 붙여넣어 실행합니다. 여러 번 실행해도 안전합니다.
 --  · rooms 에 '# 📺 유튜브-대시보드' 채널방(slug = youtube-dashboard)을 넣습니다.
 --  · 통계 자체는 저장하지 않습니다 — 화면이 Edge Function
---    get-youtube-dashboard 로 두 채널(별별해외이슈 · ショッと見て)을 그때그때 읽습니다.
+--    get-youtube-dashboard 로 세 채널(별별해외이슈 · 쇼츠 좀 봐 · 숏까뜨)을 그때그때 읽습니다.
 -- ──────────────────────────────────────────────────────────────
 
 insert into public.rooms (id, slug, name, description) values
   ('66666666-6666-4666-8666-666666666666', 'youtube-dashboard', '📺 유튜브-대시보드',
-   '별별해외이슈 · ショッと見て 두 채널의 구독자·조회수·최근 영상 성과·미응답 댓글을 한 화면에서 보는 전용 채널방')
+   '별별해외이슈 · 쇼츠 좀 봐 · 숏까뜨 세 채널의 구독자·조회수·최근 영상 성과·미응답 댓글을 한 화면에서 보는 전용 채널방')
 on conflict (id) do update
   set slug = excluded.slug,
       name = excluded.name,

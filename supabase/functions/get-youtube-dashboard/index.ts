@@ -2,12 +2,14 @@
 //  Supabase Edge Function · get-youtube-dashboard
 //  # 📺 유튜브-대시보드 채널방이 호출하는 함수.
 //
-//  · 별별해외이슈(kr) · ショッと見て(jp) 두 채널의 YouTube Data API v3 /
+//  · 별별해외이슈(kr) · 쇼츠 좀 봐(jp · ショッと見て) · 숏까뜨(sk) 세 채널의 YouTube Data API v3 /
 //    YouTube Analytics API v2 통계를 한 번에 모아 JSON 으로 돌려준다.
-//  · OAuth 클라이언트 ID/Secret 과 두 채널의 리프레시 토큰은 이 함수의
+//  · OAuth 클라이언트 ID/Secret 과 세 채널의 리프레시 토큰은 이 함수의
 //    Edge Function Secrets (YT_CLIENT_ID / YT_CLIENT_SECRET /
-//    YT_REFRESH_TOKEN_KR / YT_REFRESH_TOKEN_JP) 에만 있다.
+//    YT_REFRESH_TOKEN_KR / YT_REFRESH_TOKEN_JP / YT_REFRESH_TOKEN_SK) 에만 있다.
 //    코드·응답·DB·저장소·브라우저 어디에도 쓰지 않는다(피클 토큰도 쓰지 않음).
+//  · 전용 토큰이 아직 없는 채널은 다른 채널의 토큰으로 '공개 데이터'(채널 정보·영상·댓글)만 읽는다.
+//    7일 분석(Analytics)은 채널 주인 토큰이 있어야 해서 그동안은 '—'로 둔다.
 //  · 60초 캐시: 60초 안의 재요청은 유튜브를 다시 부르지 않고 직전 결과를 돌려준다.
 //    ?refresh=1 은 캐시를 건너뛴다(단 5초 안의 연타는 캐시 — 버튼 연타·여러 탭 보호).
 //  · Analytics(7일 조회수)가 실패해도 Data API 결과만으로 정상 응답한다.
@@ -104,10 +106,20 @@ const CHANNELS: Dict[] = [
   },
   {
     key: "jp",
-    label: "ショッと見て",
+    label: "쇼츠 좀 봐",
     flag: "🇯🇵",
     channelId: "UCQTPE4JD2ER8pSS034VWO-Q",
     env: "YT_REFRESH_TOKEN_JP",
+  },
+  {
+    // 한국 연예·핫이슈 쇼츠 채널 — 전용 토큰(YT_REFRESH_TOKEN_SK)이 생기면 분석까지 채워진다
+    key: "sk",
+    label: "숏까뜨",
+    flag: "⭐",
+    channelId: "UCfxVHXwRxYGGInnytvCb2FA",
+    env: "YT_REFRESH_TOKEN_SK",
+    publicEnv: "YT_REFRESH_TOKEN_KR",   // 공개 데이터만 읽을 때 빌려 쓰는 토큰
+    url: "https://www.youtube.com/@숏까뜨",
   },
 ];
 
@@ -252,8 +264,9 @@ async function buildChannel(meta: Dict, refreshToken: string, debug: boolean): P
     label: meta.label,
     flag: meta.flag,
     channelId: meta.channelId,
-    url: `https://www.youtube.com/channel/${meta.channelId}`,
+    url: meta.url || `https://www.youtube.com/channel/${meta.channelId}`,
     avatar: null,
+    publicOnly: false,
     handle: null,
     stats: { subscribers: null, views: null, videos: null, hiddenSubscribers: false },
     videos: [],
@@ -266,22 +279,37 @@ async function buildChannel(meta: Dict, refreshToken: string, debug: boolean): P
   };
 
   let token: string;
+  let owns = true;   // 이 채널의 전용 토큰으로 읽었는지(분석 API 사용 가능)
   try {
     token = await accessToken(refreshToken, meta.key);
   } catch (err) {
-    out.error = (err as Error).message;
-    out.comments.error = out.error;
-    out.analytics.error = out.error;
-    return out;
+    // 전용 토큰이 없으면 다른 채널의 토큰으로 '공개 데이터'만 읽는다 —
+    // 새 채널을 추가하고 시크릿을 아직 넣지 않아도 카드·최근 영상·댓글이 채워진다.
+    const pub = (Deno.env.get(meta.publicEnv || "YT_REFRESH_TOKEN_KR") || "").trim();
+    if (!pub) {
+      out.error = (err as Error).message;
+      out.comments.error = out.error;
+      out.analytics.error = out.error;
+      return out;
+    }
+    try {
+      token = await accessToken(pub, "public-read");
+      owns = false;
+      out.publicOnly = true;
+    } catch (err2) {
+      out.error = (err as Error).message || (err2 as Error).message;
+      out.comments.error = out.error;
+      out.analytics.error = out.error;
+      return out;
+    }
   }
 
-  // 1) 채널 기본 정보
+  // 1) 채널 기본 정보 (공개 조회일 때는 채널 ID 로 직접 읽는다)
   let channel: Dict | null = null;
   try {
-    const res = await apiGet(token, `${DATA_API}/channels`, {
-      part: "snippet,statistics,contentDetails,status",
-      mine: "true",
-    });
+    const res = await apiGet(token, `${DATA_API}/channels`, owns
+      ? { part: "snippet,statistics,contentDetails,status", mine: "true" }
+      : { part: "snippet,statistics,contentDetails", id: meta.channelId });
     channel = (res.items || [])[0] || null;
     if (!channel) throw new Error("채널 정보를 받지 못했습니다.");
     out.handle = channel.snippet?.customUrl || null;
@@ -306,7 +334,8 @@ async function buildChannel(meta: Dict, refreshToken: string, debug: boolean): P
   try {
     if (!uploads) throw new Error("업로드 재생목록을 찾지 못했습니다.");
     const pl = await apiGet(token, `${DATA_API}/playlistItems`, {
-      part: "snippet,contentDetails,status",
+      // status 는 채널 주인에게만 돌려준다 — 공개 조회에서는 뺐다
+      part: owns ? "snippet,contentDetails,status" : "snippet,contentDetails",
       playlistId: uploads,
       maxResults: VIDEO_LIMIT,
     });
@@ -317,7 +346,7 @@ async function buildChannel(meta: Dict, refreshToken: string, debug: boolean): P
 
     if (ids.length) {
       const vids = await apiGet(token, `${DATA_API}/videos`, {
-        part: "snippet,statistics,status,contentDetails",
+        part: owns ? "snippet,statistics,status,contentDetails" : "snippet,statistics,contentDetails",
         id: ids.join(","),
       });
       const byId: Dict = {};
@@ -443,6 +472,7 @@ async function buildChannel(meta: Dict, refreshToken: string, debug: boolean): P
 
   // 4) 최근 7일 일별 조회수 (Analytics) — 실패해도 Data API 결과는 그대로
   try {
+    if (!owns) throw new Error(`${meta.env} 시크릿이 없어 공개 통계만 표시합니다.`);
     const range = kstToday();
     const get = async (start: string, end: string, metrics: string) =>
       await apiGet(token, `${ANALYTICS_API}/reports`, {
@@ -575,13 +605,13 @@ Deno.serve(async (req: Request) => {
     else {
       if (ch.videosError) warnings.push(`${ch.label} 영상 목록: ${ch.videosError}`);
       if (ch.comments.error) warnings.push(`${ch.label} 댓글: ${ch.comments.error}`);
-      if (ch.analytics && !ch.analytics.ok) warnings.push(`${ch.label} 분석: ${ch.analytics.error}`);
+      if (ch.analytics && !ch.analytics.ok && !ch.publicOnly) warnings.push(`${ch.label} 분석: ${ch.analytics.error}`);
     }
   }
 
-  const byKey: Dict = {};
-  for (const ch of results) byKey[ch.key] = ch;
   const number = (v: any) => (typeof v === "number" && isFinite(v) ? v : 0);
+  // 채널이 늘어도 합계가 맞도록 전체 채널을 더한다(읽기 실패 채널은 0)
+  const total = (pick: (c: Dict) => any) => results.reduce((n, c) => n + number(pick(c)), 0);
 
   const payload: Dict = {
     ok: results.some((c) => !c.error),
@@ -597,12 +627,12 @@ Deno.serve(async (req: Request) => {
     channels: results,
     summary: {
       channels: results.length,
-      subscribers: number(byKey.kr?.stats?.subscribers) + number(byKey.jp?.stats?.subscribers),
-      views: number(byKey.kr?.stats?.views) + number(byKey.jp?.stats?.views),
-      videos: number(byKey.kr?.stats?.videos) + number(byKey.jp?.stats?.videos),
-      views7d: number(byKey.kr?.analytics?.views7d) + number(byKey.jp?.analytics?.views7d),
-      unanswered: number(byKey.kr?.comments?.unanswered) + number(byKey.jp?.comments?.unanswered),
-      hot: number(byKey.kr?.hotCount) + number(byKey.jp?.hotCount),
+      subscribers: total((c) => c.stats?.subscribers),
+      views: total((c) => c.stats?.views),
+      videos: total((c) => c.stats?.videos),
+      views7d: total((c) => c.analytics?.views7d),
+      unanswered: total((c) => c.comments?.unanswered),
+      hot: total((c) => c.hotCount),
     },
     warnings,
     tookMs: Date.now() - started,

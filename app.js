@@ -1035,9 +1035,11 @@
   /* ── 📅 업로드-캘린더 채널방 (노션 일정 · Edge Function이 노션을 읽는다) ── */
   var CAL_SLUG = 'upload-calendar';
   var CAL_DOW = ['일', '월', '화', '수', '목', '금', '토'];
+  /* 화면에 보이는 이름은 한글 — 일본어 채널 ショッと見て(쇼츠+ちょっと見て)는 '쇼츠 좀 봐' 로 옮긴다 */
   var CAL_CH = {
     kr: { flag: '🇰🇷', name: '별별해외이슈' },
-    jp: { flag: '🇯🇵', name: 'ショッと見て' },
+    jp: { flag: '🇯🇵', name: '쇼츠 좀 봐', orig: 'ショッと見て' },
+    sk: { flag: '⭐', name: '숏까뜨' },
     etc: { flag: '🗓', name: '기타' }
   };
   var CAL_STATUS = {
@@ -1211,7 +1213,7 @@
         (key === today ? ' today' : '') + (key === calState.selected ? ' sel' : '');
       var label = (d.getMonth() + 1) + '월 ' + d.getDate() + '일';
       var chips = '';
-      ['kr', 'jp', 'etc'].forEach(function (ch) {
+      ['kr', 'jp', 'sk', 'etc'].forEach(function (ch) {
         if (calState.filter !== 'all' && calState.filter !== ch) return;
         var part = list.filter(function (it) { return it.channel === ch; });
         if (!part.length) return;
@@ -1349,9 +1351,13 @@
 
   /* ── 📺 유튜브-대시보드 채널방 (YouTube Data·Analytics · Edge Function이 직접 읽는다) ── */
   var YT_SLUG = 'youtube-dashboard';
+  /* 채널 이름표 — 일본어 채널은 한글로 옮겨 적는다(핸들 @shottomite 는 그대로) */
+  var YT_CH_LABEL = { kr: '별별해외이슈', jp: '쇼츠 좀 봐', sk: '숏까뜨' };
+  var YT_CH_ORIG = { jp: 'ショッと見て' };
   var YT_FALLBACK = {
     kr: { flag: '🇰🇷', name: '별별해외이슈' },
-    jp: { flag: '🇯🇵', name: 'ショッと見て' }
+    jp: { flag: '🇯🇵', name: '쇼츠 좀 봐' },
+    sk: { flag: '⭐', name: '숏까뜨' }
   };
   var ytState = {
     data: null, fetchedAt: 0, lastAttempt: 0, error: null,
@@ -1393,10 +1399,26 @@
   }
   function ytParse(iso) { return iso ? (Date.parse(iso) || 0) : 0; }
   function ytChannels() {
-    var list = (ytState.data && ytState.data.channels) || [];
+    var list = ((ytState.data && ytState.data.channels) || []).slice();
+    /* 함수가 아직 모르는 채널(새로 만든 채널)도 이름·링크는 보이게 — 숫자는 '연결 전'으로 둔다 */
+    var have = {};
+    list.forEach(function (c) { have[c.key] = true; });
+    Object.keys(YT_FALLBACK).forEach(function (k) {
+      if (have[k]) return;
+      list.push({
+        key: k, label: YT_FALLBACK[k].name, flag: YT_FALLBACK[k].flag, pending: true,
+        url: k === 'sk' ? 'https://www.youtube.com/@숏까뜨' : (k === 'jp' ? 'https://www.youtube.com/@shottomite' : 'https://www.youtube.com/@별별해외이슈'),
+        stats: null, videos: [], avgViews: 0, hotCount: 0, comments: {}, analytics: {}
+      });
+    });
     return list.filter(function (c) { return ytState.filter === 'all' || c.key === ytState.filter; });
   }
   function ytMetaOf(key) { return YT_FALLBACK[key] || { flag: '📺', name: key }; }
+  /** 채널 이름표 — 함수가 보낸 label(일본어 등)보다 화면용 한글 이름을 먼저 쓴다 */
+  function ytName(ch) {
+    var k = ch && ch.key;
+    return YT_CH_LABEL[k] || (ch && ch.label) || ytMetaOf(k).name;
+  }
   /** '11/27 18:30' — 예약 시각처럼 먼 미래도 보이게 */
   function ytWhen(iso) {
     var ts = ytParse(iso);
@@ -1511,7 +1533,9 @@
       change = ' <em class="' + (an.changePct >= 0 ? 'up' : 'down') + '">' +
         (an.changePct >= 0 ? '▲' : '▼') + Math.abs(an.changePct) + '%</em>';
     }
-    var body = ch.error
+    var body = ch.pending
+      ? '<div class="y-empty"><b>통계 연결 전</b><span>채널은 등록됐고, 통계 연동이 끝나면 숫자가 채워집니다.</span></div>'
+      : ch.error
       ? '<div class="y-empty err"><b>채널을 읽지 못했습니다</b><span>' + esc(ch.error) + '</span></div>'
       : '<div class="y-stats">' +
           '<div class="y-stat"><b>' + ytNum(st.subscribers) + '</b><span>구독자</span></div>' +
@@ -1522,8 +1546,8 @@
           (ch.avgViews != null ? ' · 영상당 평균 <b>' + ytNum(ch.avgViews) + '</b>회' : '') + '</p>';
 
     return '<a class="y-card" data-ch="' + esc(ch.key || '') + '" href="' + esc(ch.url || '#') + '" target="_blank" rel="noopener noreferrer">' +
-      '<div class="y-card-top"><span class="y-badge">' +
-        '<span class="y-flag">' + (ch.flag || meta.flag) + '</span>' + esc(ch.label || meta.name) + '</span></div>' +
+      '<div class="y-card-top"><span class="y-badge" title="' + esc(YT_CH_ORIG[ch.key] || ytName(ch)) + '">' +
+        '<span class="y-flag">' + (ch.flag || meta.flag) + '</span>' + esc(ytName(ch)) + '</span></div>' +
       body +
       (chips ? '<div class="y-card-badges">' + chips + '</div>' : '') +
     '</a>';
@@ -1548,14 +1572,14 @@
   }
 
   function ytCleanTitle(t) {
-    return String(t || '').replace(/\s*[|｜]\s*(별별해외이슈|ショッと見て)\s*$/, '').trim() || String(t || '');
+    return String(t || '').replace(/\s*[|｜]\s*(별별해외이슈|ショッと見て|쇼츠 좀 봐|숏까뜨)\s*$/, '').trim() || String(t || '');
   }
 
   function ytVideoRowHTML(ch, v) {
     var meta = ytMetaOf(ch.key);
     var key = esc(ch.key || '');
     var isShort = !!v.isShort;
-    var tags = '<span class="y-pill" data-ch="' + key + '">' + (ch.flag || meta.flag) + ' ' + esc(ch.label || meta.name) + '</span>';
+    var tags = '<span class="y-pill" data-ch="' + key + '">' + (ch.flag || meta.flag) + ' ' + esc(ytName(ch)) + '</span>';
     if (v.hot) tags += '<span class="y-pill hot">🔥 급상승' + (v.vsAvg ? ' ' + v.vsAvg + '배' : '') + '</span>';
     if (v.privacy && v.privacy !== 'public') {
       var pcls = v.privacy === 'scheduled' ? 'scheduled' : v.privacy;
@@ -1633,7 +1657,7 @@
       '<span class="y-ctext">' + esc(c.text || '') + '</span>' +
       (c.videoTitle ? '<span class="y-cvid">🎬 ' + esc(ytCleanTitle(c.videoTitle)) + '</span>' : '') +
       '<span class="y-cfoot">' +
-        '<span class="y-pill" data-ch="' + esc(ch.key || '') + '">' + (ch.flag || meta.flag) + ' ' + esc(ch.label || meta.name) + '</span>' +
+        '<span class="y-pill" data-ch="' + esc(ch.key || '') + '">' + (ch.flag || meta.flag) + ' ' + esc(ytName(ch)) + '</span>' +
         '<span class="y-cfoot-r">' +
           (c.likes ? '<span class="y-clike">👍 ' + ytNum(c.likes) + '</span>' : '') +
           '<span class="y-reply">답글 달기 ↗</span>' +

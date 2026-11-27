@@ -1510,6 +1510,7 @@ body.calendar-mode .stage, body.yt-mode .stage { padding-bottom: 0; }
 .c-badge.ch[data-ch="kr"] { color: #93c5fd; border-color: rgba(59, 130, 246, .35); background: rgba(59, 130, 246, .12); }
 .c-badge.ch[data-ch="jp"] { color: #c4b5fd; border-color: rgba(139, 92, 246, .35); background: rgba(139, 92, 246, .12); }
 .c-badge.ch[data-ch="etc"] { color: #a7f3d0; border-color: rgba(16, 185, 129, .3); background: rgba(16, 185, 129, .1); }
+.c-badge.ch[data-ch="sk"] { color: #fbcfe8; border-color: rgba(219, 39, 119, .38); background: rgba(219, 39, 119, .14); }
 .c-badge.code { color: #9aa3b4; font-variant-numeric: tabular-nums; }
 .c-badge.st { margin-left: auto; }
 .c-badge.st[data-s="done"] { color: #6ee7b7; border-color: rgba(16, 185, 129, .35); background: rgba(16, 185, 129, .12); }
@@ -1561,6 +1562,7 @@ body.calendar-mode .stage, body.yt-mode .stage { padding-bottom: 0; }
 .c-chip[data-ch="kr"] { background: rgba(59, 130, 246, .16); }
 .c-chip[data-ch="jp"] { background: rgba(139, 92, 246, .16); }
 .c-chip[data-ch="etc"] { background: rgba(16, 185, 129, .14); }
+.c-chip[data-ch="sk"] { background: rgba(219, 39, 119, .18); }
 .c-day.sel .c-chip { background: rgba(255, 255, 255, .22); }
 @media (max-width: 430px) {
   .c-chip { font-size: 8.5px; padding: 2px 1.5px; gap: 1px; }
@@ -1587,8 +1589,10 @@ body.yt-mode {
   --y-primary-2: #1E40AF;
   --y-kr: #1D4ED8;
   --y-jp: #7C3AED;
+  --y-sk: #BE185D;
   --y-bar-kr: #0284C7;
   --y-bar-jp: #7C3AED;
+  --y-bar-sk: #DB2777;
   --y-bar-zero: #E2E8F0;
   --y-hot-bg: #FFEDD5;
   --y-hot-text: #9A3412;
@@ -1615,8 +1619,10 @@ body.yt-mode.yt-dark {
   --y-primary-2: #3B82F6;
   --y-kr: #2563EB;
   --y-jp: #7C3AED;
+  --y-sk: #DB2777;
   --y-bar-kr: #38BDF8;
   --y-bar-jp: #C084FC;
+  --y-bar-sk: #F472B6;
   --y-bar-zero: #64748B;
   --y-hot-bg: #431407;
   --y-hot-text: #FDBA74;
@@ -1721,6 +1727,7 @@ body.yt-dark .y-theme .i-moon { display: block; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
 }
 .y-card[data-ch="jp"] .y-badge { background: var(--y-jp); }
+.y-card[data-ch="sk"] .y-badge { background: var(--y-sk); }
 .y-flag { flex: 0 0 auto; font-size: 13px; line-height: 1; }
 
 .y-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
@@ -1746,6 +1753,7 @@ body.yt-dark .y-theme .i-moon { display: block; }
   border-radius: 9px; background: var(--y-bar-kr);
 }
 .y-card[data-ch="jp"] .y-bar { background: var(--y-bar-jp); }
+.y-card[data-ch="sk"] .y-bar { background: var(--y-bar-sk); }
 .y-bar.zero { height: 8px; background: var(--y-bar-zero); }
 .y-peak {
   position: absolute; top: -2px; left: 50%; transform: translateX(-50%);
@@ -1822,6 +1830,7 @@ body.yt-dark .y-theme .i-moon { display: block; }
   font-size: 11.5px; font-weight: 800; white-space: nowrap;
 }
 .y-pill[data-ch="jp"] { background: var(--y-jp); }
+.y-pill[data-ch="sk"] { background: var(--y-sk); }
 .y-pill.hot { background: var(--y-hot-bg); color: var(--y-hot-text); border: 1px solid var(--y-hot-line); }
 .y-pill.scheduled { background: var(--y-warn-bg); color: var(--y-warn-text); border: 1px solid var(--y-warn-line); }
 .y-pill.private, .y-pill.unlisted { background: var(--y-soft); color: var(--y-text-2); border: 1px solid var(--y-line-2); }
