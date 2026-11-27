@@ -46,7 +46,7 @@
   Analytics(7일 조회수)가 실패해도 Data API 결과만으로 정상 응답합니다(응답의 `warnings` 에 사유 표시).
 - 채널방 시드는 [`supabase/youtube_dashboard.sql`](supabase/youtube_dashboard.sql), 함수는
   [`supabase/functions/get-youtube-dashboard/index.ts`](supabase/functions/get-youtube-dashboard/index.ts).
-- 자산 버전 `1.6.0`, 서비스워커 캐시 `v23`.
+- 자산 버전 `1.6.5`, 서비스워커 캐시 `v28`.
 
 ## 이전 버전(v1.5.0)에서 달라진 점 — 📅 업로드-캘린더 채널방
 

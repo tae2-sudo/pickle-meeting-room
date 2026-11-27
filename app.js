@@ -1526,8 +1526,7 @@
       if (a.v.hot) return (b.v.vsAvg || 0) - (a.v.vsAvg || 0);  // 급상승 안에서는 평균 대비 높은 순
       return ytParse(b.v.publishedAt) - ytParse(a.v.publishedAt);
     });
-    var narrow = false;
-    try { narrow = window.matchMedia('(max-width: 699px)').matches; } catch (e) { narrow = false; }
+    var narrow = ytIsNarrow();
     var limit = narrow ? 6 : (ytState.filter === 'all' ? 12 : 20);
     var shown = rows.slice(0, limit);
     if (sub) {
@@ -1644,6 +1643,20 @@
         if (e.target.closest('[data-act="retry"]')) ytFetch(true);
       });
     }
+    // 폴드 접기/펼치기로 폭이 바뀌면 영상 개수 기준(1단/2단)을 다시 계산한다
+    var lastNarrow = ytIsNarrow();
+    var t = null;
+    window.addEventListener('resize', function () {
+      clearTimeout(t);
+      t = setTimeout(function () {
+        var n = ytIsNarrow();
+        if (n !== lastNarrow) { lastNarrow = n; if (isYoutubeRoom()) renderYoutube(); }
+      }, 180);
+    });
+  }
+
+  function ytIsNarrow() {
+    try { return window.matchMedia('(max-width: 699px)').matches; } catch (e) { return false; }
   }
 
   /* 채널방과 회의실의 화면·컴포저를 서로 섮이지 않게 전환한다 */
