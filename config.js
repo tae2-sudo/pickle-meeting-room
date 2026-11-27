@@ -10,5 +10,5 @@ window.PICKLE_ROOM_CONFIG = {
   /* 📅 업로드-캘린더 방이 노션 '📅 06 - 업로드 캘린더' 일정을 읽어오는 Edge Function.
      노션 키(NOTION_API_KEY)는 이 함수의 Secrets 에만 있습니다. */
   calendarFunctionUrl: 'https://fbmgkbspiswuekvlhpth.supabase.co/functions/v1/get-upload-calendar',
-  appVersion: '1.5.0'
+  appVersion: '1.5.1'
 };
