@@ -222,8 +222,9 @@ function noteOf(text: string): string {
   let s = squash(text);
   s = s.replace(/[\u2705\u23f3\u26a0\ufe0f\u26d4\u2714\ufe0f\u2757]/g, "").trim();
   s = s.replace(STATUS_PREFIX, "").trim();
-  s = s.replace(/^[·\-–—:,，、|()\s]+/, "").trim();
-  if (s.includes(")") && !s.includes("(")) s = s.replace(/\)+\s*$/, "").trim();
+  s = s.replace(/^[·\-–—:,，、|\s]+/, "").trim();
+  if (s.startsWith("(") && !s.includes(")")) s = s.slice(1).trim();
+  if (s.endsWith(")") && !s.includes("(")) s = s.slice(0, -1).trim();
   return s;
 }
 

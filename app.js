@@ -1121,8 +1121,8 @@
         syncEl.setAttribute('data-state', 'error');
       } else if (calState.fetchedAt) {
         var edited = calState.source && calState.source.lastEditedTime ? Date.parse(calState.source.lastEditedTime) : 0;
-        syncEl.innerHTML = '노션 <b>' + esc(fmtClock(calState.fetchedAt)) + '</b> 동기화 · ' + esc(relTime(calState.fetchedAt)) +
-          (edited ? ' · 노션 수정 ' + esc(relTime(edited)) : '');
+        syncEl.innerHTML = '노션 <b>' + esc(fmtClock(calState.fetchedAt)) + '</b> 동기화 · ' + esc(relTime(calState.fetchedAt));
+        syncEl.title = edited ? '노션 페이지 수정 ' + relTime(edited) + ' · ' + (calState.items.length + '건') : '';
         syncEl.removeAttribute('data-state');
       } else {
         syncEl.textContent = '아직 동기화하지 않았습니다.';
@@ -1143,15 +1143,15 @@
     var t = calTally(calFiltered().filter(function (it) { return (it.date || '').slice(0, 7) === mk; }));
     var label = calState.filter === 'all' ? '' : ' · ' + (CAL_CH[calState.filter] ? CAL_CH[calState.filter].name : '');
     if (!t.total) {
-      el.innerHTML = '<span class="c-mb-label">' + (+mk.slice(5, 7)) + '월<b>' + esc(label) + '</b></span><span class="c-mb-empty">등록된 일정 없음</span>';
+      el.innerHTML = '<span class="c-mb-label">' + (+mk.slice(5, 7)) + '월' + esc(label) + '</span><span class="c-mb-empty">등록된 일정 없음</span>';
       return;
     }
-    el.innerHTML = '<span class="c-mb-label">' + (+mk.slice(5, 7)) + '월<b>' + esc(label) + '</b></span>' +
+    el.innerHTML = '<span class="c-mb-label">' + (+mk.slice(5, 7)) + '월' + esc(label) + '</span>' +
       '<span class="c-mb">총 <b>' + t.total + '</b>건</span>' +
-      '<span class="c-mb ok"><i class="c-dot" data-s="done"></i>' + t.done + '</span>' +
-      '<span class="c-mb wait"><i class="c-dot" data-s="scheduled"></i>' + t.scheduled + '</span>' +
-      (t.missing ? '<span class="c-mb miss"><i class="c-dot" data-s="missing"></i>' + t.missing + '</span>' : '') +
-      (t.warn ? '<span class="c-mb warn"><i class="c-dot" data-s="warn"></i>' + t.warn + '</span>' : '');
+      '<span class="c-mb ok"><i class="c-dot" data-s="done"></i>공개 <b>' + t.done + '</b></span>' +
+      '<span class="c-mb wait"><i class="c-dot" data-s="scheduled"></i>예약 <b>' + t.scheduled + '</b></span>' +
+      (t.missing ? '<span class="c-mb miss"><i class="c-dot" data-s="missing"></i>미제작 <b>' + t.missing + '</b></span>' : '') +
+      (t.warn ? '<span class="c-mb warn"><i class="c-dot" data-s="warn"></i>보완 <b>' + t.warn + '</b></span>' : '');
   }
 
   function renderCalGrid() {
@@ -1182,8 +1182,10 @@
         var done = part.filter(function (it) { return it.status === 'done'; }).length;
         var st = calDotStatus(part);
         var meta = CAL_CH[ch] || CAL_CH.etc;
+        // 기타(스레드 등)는 공개/전체 비율이 의미가 없어 건수만 보여 준다
+        var count = ch === 'etc' ? String(part.length) : ('<b>' + done + '</b>/' + part.length);
         chips += '<span class="c-chip" data-s="' + st + '"><span class="cf" aria-hidden="true">' + meta.flag + '</span>' +
-          '<b>' + done + '</b>/' + part.length + '<i class="c-dot" data-s="' + st + '"></i></span>';
+          count + '<i class="c-dot" data-s="' + st + '"></i></span>';
         label += ', ' + meta.name + ' ' + part.length + '건 중 ' + done + '건 공개';
       });
       if (list.length) label += ' · 업로드 ' + list.length + '건';
