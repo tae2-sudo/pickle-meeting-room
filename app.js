@@ -530,7 +530,8 @@
         ? '노션에서 불러오는 중…'
         : ((calState.error && !calState.items.length)
           ? '노션 읽기 실패'
-          : (+cs.month.slice(5, 7)) + '월 ' + cs.total + '건 · 공개 ' + cs.done + ' · 예약 ' + cs.scheduled +
+          : '이번 달 ' + cs.total + '건 · 공개 ' + cs.done +
+            (cs.scheduled ? ' · 예약 ' + cs.scheduled : '') +
             (cs.missing ? ' · 미제작 ' + cs.missing : ''));
       $('#memberCount').textContent = String(cs.total);
       return;
@@ -1184,7 +1185,7 @@
         var meta = CAL_CH[ch] || CAL_CH.etc;
         // 기타(스레드 등)는 공개/전체 비율이 의미가 없어 건수만 보여 준다
         var count = ch === 'etc' ? String(part.length) : ('<b>' + done + '</b>/' + part.length);
-        chips += '<span class="c-chip" data-s="' + st + '"><span class="cf" aria-hidden="true">' + meta.flag + '</span>' +
+        chips += '<span class="c-chip" data-ch="' + ch + '" data-s="' + st + '"><span class="cf" aria-hidden="true">' + meta.flag + '</span>' +
           count + '<i class="c-dot" data-s="' + st + '"></i></span>';
         label += ', ' + meta.name + ' ' + part.length + '건 중 ' + done + '건 공개';
       });

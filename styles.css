@@ -1556,3 +1556,14 @@ body.calendar-mode .stage { padding-bottom: 0; }
   .c-head h2 { font-size: 15px; }
   .c-refresh .c-refresh-label { display: none; }
 }
+
+/* ── 좁은 폰(≤430px): 날짜 칸 안의 채널 칩을 최대한 살리기 ── */
+.c-chip[data-ch="kr"] { background: rgba(59, 130, 246, .16); }
+.c-chip[data-ch="jp"] { background: rgba(139, 92, 246, .16); }
+.c-chip[data-ch="etc"] { background: rgba(16, 185, 129, .14); }
+.c-day.sel .c-chip { background: rgba(255, 255, 255, .22); }
+@media (max-width: 430px) {
+  .c-chip { font-size: 8.5px; padding: 2px 1.5px; gap: 1px; }
+  .c-chip .cf { font-size: 8px; }
+  .c-day { padding: 4px 2px; }
+}
