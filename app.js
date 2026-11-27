@@ -530,9 +530,8 @@
         ? '노션에서 불러오는 중…'
         : ((calState.error && !calState.items.length)
           ? '노션 읽기 실패'
-          : '이번 달 ' + cs.total + '건 · 공개 ' + cs.done +
-            (cs.scheduled ? ' · 예약 ' + cs.scheduled : '') +
-            (cs.missing ? ' · 미제작 ' + cs.missing : ''));
+          : cs.total + '건 · 공개 ' + cs.done +
+            (cs.scheduled ? ' · 예약 ' + cs.scheduled : ''));
       $('#memberCount').textContent = String(cs.total);
       return;
     }
