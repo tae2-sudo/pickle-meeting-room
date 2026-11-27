@@ -10,10 +10,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="비서 회의실" />
   <title># 비서-통합-회의실</title>
-  <link rel="manifest" href="manifest.webmanifest?v=1.6.6" />
+  <link rel="manifest" href="manifest.webmanifest?v=1.6.7" />
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="styles.css?v=1.6.6" />
+  <link rel="stylesheet" href="styles.css?v=1.6.7" />
 </head>
 <body>
   <div class="app" id="app">
@@ -489,6 +489,18 @@
         </section>
 
         <section class="set-block">
+          <h4>보안</h4>
+          <label class="field">
+            <span class="field-label">앱 접근 키 (x-app-key)</span>
+            <div class="inline-input">
+              <input id="setAppKey" type="password" autocomplete="off" spellcheck="false" placeholder="Supabase Secret APP_ACCESS_KEY 값" />
+              <button class="btn small" id="saveAppKey">저장</button>
+            </div>
+          </label>
+          <p class="set-hint">Supabase Edge Function Secrets 에 <b>APP_ACCESS_KEY</b> 를 넣으면, 이 키를 저장한 화면만 캘린더·유튜브·실시간 실측 함수를 부를 수 있습니다. 키는 이 기기에만 저장되고 서버·DB 로 보내지 않습니다. 비워 두면 예전처럼 동작합니다.</p>
+        </section>
+
+        <section class="set-block">
           <h4>동작</h4>
           <label class="switch-row">
             <span><b>대시보드로 시작</b><small>앱을 열면 사용량을 먼저 보여줍니다.</small></span>
@@ -514,7 +526,7 @@
             <button class="btn ghost" id="refreshBtn2">서버에서 새로고침</button>
           </div>
         </section>
-        <p class="app-version">비서 통합 회의실 · v<span id="appVersion">1.6.6</span> · Supabase 실시간</p>
+        <p class="app-version">비서 통합 회의실 · v<span id="appVersion">1.6.7</span> · Supabase 실시간</p>
       </div>
     </div>
   </div>
@@ -645,8 +657,8 @@
       });
     })();
   </script>
-  <script src="config.js?v=1.6.6"></script>
+  <script src="config.js?v=1.6.7"></script>
   <script src="vendor/supabase.js"></script>
-  <script src="app.js?v=1.6.6"></script>
+  <script src="app.js?v=1.6.7"></script>
 </body>
 </html>

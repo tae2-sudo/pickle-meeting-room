@@ -4,16 +4,17 @@
    v11: 기준 한도에서 차감한 '예상 %'·게이지 표시 (v1.4.1)
    v18: 📅 업로드-캘린더 채널방 (노션 일정 · 달력/타임라인) (v1.5.0)
    v23: 📺 유튜브-대시보드 채널방 (구독·조회·영상 성과·미응답 댓글) (v1.6.0)
-   v29: 📺 유튜브 대시보드 고대비 리뉴얼 — v0 시안, 라이트/다크 토글 (v1.6.6) */
-const CACHE = 'pickle-meeting-room-v29';
+   v29: 📺 유튜브 대시보드 고대비 리뉴얼 — v0 시안, 라이트/다크 토글 (v1.6.6)
+   v30: Edge Function CORS 제한 · x-app-key 헤더 (v1.6.7) */
+const CACHE = 'pickle-meeting-room-v30';
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=1.6.6',
-  './config.js?v=1.6.6',
+  './styles.css?v=1.6.7',
+  './config.js?v=1.6.7',
   './vendor/supabase.js',
-  './app.js?v=1.6.6',
-  './manifest.webmanifest?v=1.6.6',
+  './app.js?v=1.6.7',
+  './manifest.webmanifest?v=1.6.7',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/maskable-512.png'

@@ -11,17 +11,75 @@
 //  · 60초 캐시: 60초 안의 재요청은 유튜브를 다시 부르지 않고 직전 결과를 돌려준다.
 //    ?refresh=1 은 캐시를 건너뛴다(단 5초 안의 연타는 캐시 — 버튼 연타·여러 탭 보호).
 //  · Analytics(7일 조회수)가 실패해도 Data API 결과만으로 정상 응답한다.
+//  · 보안: 허용한 Origin(https://tae2-sudo.github.io · 로컬 개발)에만 CORS 를 열고,
+//    Secrets 에 APP_ACCESS_KEY 가 있으면 x-app-key 헤더가 맞아야 응답한다(아래 '보안' 절).
 // ──────────────────────────────────────────────────────────────
 // deno-lint-ignore-file no-explicit-any
 
 type Dict = Record<string, any>;
 
-const CORS_HEADERS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Max-Age": "86400",
-};
+// ────────────────────────────── 보안: CORS · 앱 접근 키 ──────────────────────────────
+// 이 함수는 Secrets 의 OAuth 토큰으로 두 채널의 유튜브 통계를 대신 읽는다.
+// 아무 사이트나 브라우저에서 부를 수 없도록 (1) 허용한 Origin 에만 CORS 를 열고
+// (2) Secrets 에 APP_ACCESS_KEY 가 있을 때는 x-app-key 헤더가 맞아야 응답한다.
+// · APP_ACCESS_KEY 미설정 → 키 검증 생략(기존 동작 그대로 · 배포 중 장애 방지)
+// · APP_ALLOWED_ORIGINS(선택) → 쉼표로 구분해 허용 Origin 을 더 넣을 수 있다
+//   (예: 'https://example.com,https://foo.github.io')
+const ALLOWED_ORIGINS = ["https://tae2-sudo.github.io"];
+const LOCAL_ORIGIN_RE = /^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d{1,5})?$/;
+const APP_ACCESS_KEY = (Deno.env.get("APP_ACCESS_KEY") || "").trim();
+
+function isAllowedOrigin(origin: string): boolean {
+  if (!origin) return false;
+  if (LOCAL_ORIGIN_RE.test(origin)) return true;
+  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  return (Deno.env.get("APP_ALLOWED_ORIGINS") || "")
+    .split(",")
+    .map((s) => s.trim().replace(/\/$/, ""))
+    .filter(Boolean)
+    .includes(origin);
+}
+
+function corsHeaders(req: Request): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-app-key",
+    "Access-Control-Max-Age": "86400",
+    // Origin·앱 키에 따라 응답이 달라지므로 중간 캐시가 섞이지 않게 한다
+    Vary: "Origin, x-app-key",
+  };
+  const origin = req.headers.get("origin") || "";
+  if (isAllowedOrigin(origin)) headers["Access-Control-Allow-Origin"] = origin;
+  return headers;
+}
+
+function appKeyMatches(got: string): boolean {
+  if (!APP_ACCESS_KEY) return true; // 미설정 = 기존 동작 유지
+  if (got.length !== APP_ACCESS_KEY.length) return false;
+  let diff = 0; // 길이를 먼저 맞춘 뒤 시간 차이를 줄이는 비교
+  for (let i = 0; i < got.length; i++) diff |= got.charCodeAt(i) ^ APP_ACCESS_KEY.charCodeAt(i);
+  return diff === 0;
+}
+
+// 허용하지 않은 Origin 이면 403 (본문 없음 · CORS 헤더도 주지 않는다)
+function originRejected(req: Request): Response | null {
+  const origin = req.headers.get("origin") || "";
+  if (!origin || isAllowedOrigin(origin)) return null;
+  return new Response(null, { status: 403, headers: corsHeaders(req) });
+}
+
+// Origin 검사 → 앱 키 검사. 통과하면 null.
+function rejectUnauthorized(req: Request): Response | null {
+  const blocked = originRejected(req);
+  if (blocked) return blocked;
+  if (!appKeyMatches((req.headers.get("x-app-key") || "").trim())) {
+    return new Response(
+      JSON.stringify({ ok: false, error: "unauthorized", message: "x-app-key 헤더가 필요합니다." }),
+      { status: 401, headers: { ...corsHeaders(req), "Content-Type": "application/json; charset=utf-8" } },
+    );
+  }
+  return null;
+}
 
 const DATA_API = "https://www.googleapis.com/youtube/v3";
 const ANALYTICS_API = "https://youtubeanalytics.googleapis.com/v2";
@@ -454,9 +512,16 @@ async function buildChannel(meta: Dict, refreshToken: string, debug: boolean): P
 
 // ────────────────────────────── handler ──────────────────────────────
 Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
+  if (req.method === "OPTIONS") {
+    const blocked = originRejected(req);
+    if (blocked) return blocked;
+    return new Response("ok", { status: 200, headers: corsHeaders(req) });
+  }
+  const denied = rejectUnauthorized(req);
+  if (denied) return denied;
+
   if (req.method !== "GET" && req.method !== "POST") {
-    return json({ ok: false, error: "method_not_allowed" }, 405);
+    return json(req, { ok: false, error: "method_not_allowed" }, 405);
   }
 
   const url = new URL(req.url);
@@ -467,7 +532,7 @@ Deno.serve(async (req: Request) => {
   if (cache && !debug) {
     const age = now - cache.at;
     if ((!force && age < CACHE_TTL_MS) || age < FORCE_MIN_MS) {
-      return json({ ...cache.payload, cached: true, cacheAgeSeconds: Math.round(age / 1000) }, 200, {
+      return json(req, { ...cache.payload, cached: true, cacheAgeSeconds: Math.round(age / 1000) }, 200, {
         "X-Cache": "HIT",
       });
     }
@@ -476,7 +541,7 @@ Deno.serve(async (req: Request) => {
   const clientId = Deno.env.get("YT_CLIENT_ID");
   const clientSecret = Deno.env.get("YT_CLIENT_SECRET");
   if (!clientId || !clientSecret) {
-    return json({
+    return json(req, {
       ok: false,
       error: "youtube_secrets_missing",
       message: "YT_CLIENT_ID / YT_CLIENT_SECRET 시크릿이 없습니다.",
@@ -544,17 +609,17 @@ Deno.serve(async (req: Request) => {
   };
 
   if (!debug) cache = { at: Date.now(), payload };
-  return json(payload, payload.ok ? 200 : 502, {
+  return json(req, payload, payload.ok ? 200 : 502, {
     "Cache-Control": "public, max-age=45",
     "X-Cache": "MISS",
   });
 });
 
-function json(body: unknown, status: number, extra: Record<string, string> = {}) {
+function json(req: Request, body: unknown, status: number, extra: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
-      ...CORS_HEADERS,
+      ...corsHeaders(req),
       "Content-Type": "application/json; charset=utf-8",
       ...extra,
     },

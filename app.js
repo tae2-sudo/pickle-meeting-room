@@ -17,6 +17,7 @@
 
   var SETTINGS_KEY = 'pickle-meeting-room.settings.v2';
   var DEFAULT_SETTINGS = { risk: 10, soon: 30, staleHours: 6, startDash: false, enterSend: true };
+  var APP_KEY_STORE = 'pickle_app_key'; // Edge Function 접근 키(x-app-key) — 이 기기에만 보관
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
@@ -33,6 +34,24 @@
   function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
   function clamp(n, lo, hi) { return Math.min(hi, Math.max(lo, n)); }
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+  /* ── Edge Function 접근 키 ─────────────────────────────────
+     Supabase Edge Function Secrets 에 APP_ACCESS_KEY 가 설정돼 있으면,
+     함수를 부를 때 x-app-key 헤더를 함께 보내야 한다.
+     키는 이 기기의 localStorage 에만 두고, 서버·DB 로 보내지 않는다. */
+  function appKey() {
+    try { return localStorage.getItem(APP_KEY_STORE) || ''; } catch (e) { return ''; }
+  }
+  function functionHeaders(extra) {
+    var h = {
+      apikey: CFG.supabaseAnonKey || '',
+      Authorization: 'Bearer ' + (CFG.supabaseAnonKey || '')
+    };
+    var key = appKey();
+    if (key) h['x-app-key'] = key;
+    if (extra) { for (var k in extra) { if (extra.hasOwnProperty(k)) h[k] = extra[k]; } }
+    return h;
+  }
 
   function fmtPct(v) {
     if (v == null || isNaN(v)) return '—';
@@ -1081,10 +1100,7 @@
     renderTop();
     try {
       var res = await fetch(url + (force ? '?refresh=1' : ''), {
-        headers: {
-          apikey: CFG.supabaseAnonKey || '',
-          Authorization: 'Bearer ' + (CFG.supabaseAnonKey || '')
-        },
+        headers: functionHeaders(),
         cache: 'no-store'
       });
       var data = null;
@@ -1397,10 +1413,7 @@
     renderTop();
     try {
       var res = await fetch(url + (force ? '?refresh=1' : ''), {
-        headers: {
-          apikey: CFG.supabaseAnonKey || '',
-          Authorization: 'Bearer ' + (CFG.supabaseAnonKey || '')
-        },
+        headers: functionHeaders(),
         cache: 'no-store'
       });
       var data = null;
@@ -2390,6 +2403,7 @@
   function openSettings() {
     var room = currentRoom();
     $('#setRoomName').value = room ? room.name : '';
+    $('#setAppKey').value = appKey();
     $('#setRisk').value = state.settings.risk;
     $('#setSoon').value = state.settings.soon;
     $('#setStale').value = state.settings.staleHours;
@@ -2403,6 +2417,18 @@
     $('#settingsDeleteRoom').style.opacity = state.rooms.length <= 1 ? '.45' : '';
     renderManageList();
     openModal('settingsModal');
+  }
+
+  function saveAppKey() {
+    var v = ($('#setAppKey').value || '').trim();
+    try {
+      if (v) localStorage.setItem(APP_KEY_STORE, v);
+      else localStorage.removeItem(APP_KEY_STORE);
+    } catch (e) {
+      toast('이 브라우저에는 키를 저장할 수 없습니다.');
+      return;
+    }
+    toast(v ? '앱 접근 키를 저장했습니다.' : '앱 접근 키를 지웠습니다.');
   }
 
   function updateThresholdHints() {
@@ -2704,17 +2730,13 @@
         try {
           var res = await fetch(fnUrl, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              apikey: CFG.supabaseAnonKey || '',
-              Authorization: 'Bearer ' + (CFG.supabaseAnonKey || '')
-            },
+            headers: functionHeaders({ 'Content-Type': 'application/json' }),
             body: '{}'
           });
           var data = null;
           try { data = await res.json(); } catch (e) { data = null; }
           if (!res.ok || !data || data.ok === false) {
-            throw new Error((data && data.error) || ('HTTP ' + res.status));
+            throw new Error((data && (data.message || data.error)) || ('HTTP ' + res.status));
           }
           await loadRemote({ silent: true });
           if (data.ran === false) {
@@ -2789,6 +2811,12 @@
     ['#setRisk', '#setSoon', '#setStale'].forEach(function (sel) {
       $(sel).addEventListener('change', applyThresholds);
     });
+    if ($('#saveAppKey')) {
+      $('#saveAppKey').addEventListener('click', saveAppKey);
+      $('#setAppKey').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); saveAppKey(); }
+      });
+    }
     $('#setStartDash').addEventListener('change', function () {
       state.settings.startDash = this.checked; saveSettings();
     });
