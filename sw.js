@@ -2,16 +2,17 @@
    정책: HTML/CSS/JS 는 네트워크 우선(항상 최신), 실패 시 캐시.
    이미지·매니페스트는 캐시 우선.
    v11: 기준 한도에서 차감한 '예상 %'·게이지 표시 (v1.4.1)
-   v18: 📅 업로드-캘린더 채널방 (노션 일정 · 달력/타임라인) (v1.5.0) */
-const CACHE = 'pickle-meeting-room-v22';
+   v18: 📅 업로드-캘린더 채널방 (노션 일정 · 달력/타임라인) (v1.5.0)
+   v23: 📺 유튜브-대시보드 채널방 (구독·조회·영상 성과·미응답 댓글) (v1.6.0) */
+const CACHE = 'pickle-meeting-room-v23';
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=1.5.4',
-  './config.js?v=1.5.4',
+  './styles.css?v=1.6.0',
+  './config.js?v=1.6.0',
   './vendor/supabase.js',
-  './app.js?v=1.5.4',
-  './manifest.webmanifest?v=1.5.4',
+  './app.js?v=1.6.0',
+  './manifest.webmanifest?v=1.6.0',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/maskable-512.png'

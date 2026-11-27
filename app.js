@@ -535,6 +535,18 @@
       $('#memberCount').textContent = String(cs.total);
       return;
     }
+    if (room && room.slug === YT_SLUG) {
+      var ys = (ytState.data && ytState.data.summary) || null;
+      if (ytState.loading && !ys) $('#roomMeta').textContent = '유튜브에서 불러오는 중…';
+      else if (ytState.error && !ys) $('#roomMeta').textContent = '유튜브 읽기 실패';
+      else if (ys) {
+        $('#roomMeta').textContent = '구독 ' + ytNum(ys.subscribers) + ' · 7일 조회 ' + ytNum(ys.views7d) +
+          ' · 미응답 댓글 ' + (ys.unanswered || 0) +
+          (ytState.fetchedAt ? ' · ' + relTime(ytState.fetchedAt) : '');
+      } else $('#roomMeta').textContent = '유튜브 통계를 기다리는 중…';
+      $('#memberCount').textContent = ys ? String(ys.unanswered || 0) : '0';
+      return;
+    }
     if (room && room.slug === QUOTA_SLUG) {
       var qc = quotaCounts();
       var lastAt = lastMeasuredAt();
@@ -631,7 +643,7 @@
 
   function renderChat(opts) {
     opts = opts || {};
-    if (isQuotaRoom() || isCalendarRoom()) return;   // 채널방은 각자의 화면을 따로 쓴다
+    if (isQuotaRoom() || isCalendarRoom() || isYoutubeRoom()) return;   // 채널방은 각자의 화면을 따로 쓴다
     var list = $('#chatList');
     var chatEl = $('#chatView');
     var room = currentRoom();
@@ -833,7 +845,7 @@
 
   function setDashboard(open) {
     ui.dashboardOpen = open;
-    if (isQuotaRoom()) { applyRoomMode(); return; }
+    if (isQuotaRoom() || isYoutubeRoom()) { applyRoomMode(); return; }
     $('#dashboard').hidden = !open;
     $('#chatView').hidden = open;
     $('#summaryToggle').setAttribute('aria-expanded', String(open));
@@ -1311,17 +1323,343 @@
     if (refresh) refresh.addEventListener('click', function () { calFetch(true); });
   }
 
+  /* ── 📺 유튜브-대시보드 채널방 (YouTube Data·Analytics · Edge Function이 직접 읽는다) ── */
+  var YT_SLUG = 'youtube-dashboard';
+  var YT_FALLBACK = {
+    kr: { flag: '🇰🇷', name: '별별해외이슈' },
+    jp: { flag: '🇯🇵', name: 'ショッと見て' }
+  };
+  var ytState = {
+    data: null, fetchedAt: 0, lastAttempt: 0, error: null,
+    loading: false, started: false, inFlight: false, filter: 'all'
+  };
+
+  function isYoutubeRoom() {
+    var r = currentRoom();
+    return !!(r && r.slug === YT_SLUG);
+  }
+  function ytNum(n) {
+    if (n == null || n === '' || isNaN(Number(n))) return '—';
+    return Number(n).toLocaleString('ko-KR');
+  }
+  function ytParse(iso) { return iso ? (Date.parse(iso) || 0) : 0; }
+  function ytChannels() {
+    var list = (ytState.data && ytState.data.channels) || [];
+    return list.filter(function (c) { return ytState.filter === 'all' || c.key === ytState.filter; });
+  }
+  function ytMetaOf(key) { return YT_FALLBACK[key] || { flag: '📺', name: key }; }
+  /** '11/27 18:30' — 예약 시각처럼 먼 미래도 보이게 */
+  function ytWhen(iso) {
+    var ts = ytParse(iso);
+    if (!ts) return '—';
+    var d = new Date(ts);
+    return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  }
+  function ytClock(ts) {
+    if (!ts) return '—';
+    var d = new Date(ts);
+    return pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  }
+
+  async function ytFetch(force) {
+    var url = CFG.youtubeFunctionUrl || '';
+    if (!url) { ytState.error = '유튜브 함수 주소가 설정되지 않았습니다.'; renderYoutube(); return; }
+    if (ytState.inFlight) return;
+    ytState.inFlight = true;
+    ytState.loading = true;
+    ytState.lastAttempt = Date.now();
+    renderYoutube();
+    renderTop();
+    try {
+      var res = await fetch(url + (force ? '?refresh=1' : ''), {
+        headers: {
+          apikey: CFG.supabaseAnonKey || '',
+          Authorization: 'Bearer ' + (CFG.supabaseAnonKey || '')
+        },
+        cache: 'no-store'
+      });
+      var data = null;
+      try { data = await res.json(); } catch (e) { data = null; }
+      if (!res.ok || !data || data.ok === false) {
+        var msg = (data && (data.message || (data.warnings && data.warnings[0]))) || ('HTTP ' + res.status);
+        if (data && data.channels && data.channels.length) {
+          ytState.data = data;   // 일부 채널만 실패해도 보여줄 수 있는 건 보여준다
+          ytState.error = msg;
+          ytState.fetchedAt = data.fetchedAt ? (Date.parse(data.fetchedAt) || Date.now()) : Date.now();
+          if (force) toast('일부 채널을 읽지 못했습니다: ' + msg);
+          return;
+        }
+        throw new Error(msg);
+      }
+      ytState.data = data;
+      ytState.fetchedAt = data.fetchedAt ? (Date.parse(data.fetchedAt) || Date.now()) : Date.now();
+      ytState.error = null;
+      if (force) {
+        var sm = data.summary || {};
+        toast('유튜브 통계를 새로 읽었습니다 · 구독 ' + ytNum(sm.subscribers) + ' · 미응답 댓글 ' + (sm.unanswered || 0) + '건');
+      }
+    } catch (err) {
+      ytState.error = (err && err.message) || String(err);
+      if (force) toast('유튜브 통계를 불러오지 못했습니다: ' + ytState.error);
+    } finally {
+      ytState.inFlight = false;
+      ytState.loading = false;
+      ytState.started = true;
+      renderYoutube();
+      renderTop();
+      renderDrawer();
+    }
+  }
+
+  function ytSparkHTML(days) {
+    var list = days || [];
+    var max = 1;
+    list.forEach(function (d) { if (d.views > max) max = d.views; });
+    return '<div class="y-spark" aria-hidden="true">' + list.map(function (d) {
+      var h = Math.max(2, Math.round((d.views / max) * 26));
+      var cls = d.views > 0 ? '' : 'dim';
+      return '<i class="' + cls + '" style="height:' + h + 'px" title="' + esc(d.date) + ' · ' + ytNum(d.views) + '회"></i>';
+    }).join('') + '</div>';
+  }
+
+  function ytCardHTML(ch) {
+    var st = ch.stats || {};
+    var an = ch.analytics || {};
+    var cm = ch.comments || {};
+    var meta = ytMetaOf(ch.key);
+    var chips = '';
+    if (ch.error) {
+      chips += '<span class="y-chip err">⚠ 읽기 실패</span>';
+    } else {
+      if (cm.unanswered) chips += '<span class="y-chip wait">💬 미응답 ' + cm.unanswered + '</span>';
+      if (ch.hotCount) chips += '<span class="y-chip hot">🔥 급상승 ' + ch.hotCount + '</span>';
+      if (cm.error) chips += '<span class="y-chip err">댓글 ' + esc(cm.error.slice(0, 12)) + '</span>';
+    }
+    var change = '';
+    if (an.ok && an.changePct != null) {
+      change = ' <span class="' + (an.changePct >= 0 ? 'up' : 'down') + '">' +
+        (an.changePct >= 0 ? '▲' : '▼') + Math.abs(an.changePct) + '%</span>';
+    }
+    var head = ch.error ? '' :
+      '<div class="y-big"><b>' + ytNum(st.subscribers) + '</b><span>구독자</span></div>' +
+      '<div class="y-kv">' +
+        '<span>총 조회수 <b>' + ytNum(st.views) + '</b></span>' +
+        '<span>영상 <b>' + ytNum(st.videos) + '</b> · 최근 평균 <b>' + ytNum(ch.avgViews) + '</b>회</span>' +
+      '</div>' +
+      (an.ok ? ytSparkHTML(an.days) : '') +
+      '<div class="y-7d"><b>' + ytNum(an.views7d) + '</b> 최근 7<span>일</span>' + change + '</div>';
+
+    return '<a class="y-card" data-ch="' + esc(ch.key || '') + '" href="' + esc(ch.url || '#') + '" target="_blank" rel="noopener noreferrer">' +
+      '<div class="y-card-top"><span class="y-flag">' + (ch.flag || meta.flag) + '</span>' +
+        '<span class="y-name">' + esc(ch.label || meta.name) + '</span></div>' +
+      (ch.error ? '<div class="y-kv" style="color:#fda4af;font-weight:700">' + esc(ch.error) + '</div>' : head) +
+      (chips ? '<div class="y-card-foot">' + chips + '</div>' : '') +
+    '</a>';
+  }
+
+  function renderYtChannels() {
+    var el = $('#ytChannels');
+    if (!el) return;
+    if (!ytState.data) {
+      el.innerHTML = '<div class="y-skel"><i style="height:150px"></i></div><div class="y-skel"><i style="height:150px"></i></div>';
+      el.classList.remove('single');
+      return;
+    }
+    var list = ytChannels();
+    el.classList.toggle('single', list.length === 1);
+    if (!list.length) {
+      el.classList.remove('single');
+      el.innerHTML = '<div class="y-empty"><b>채널 정보가 없습니다</b><span>새로고침을 눌러 다시 읽어 보세요.</span></div>';
+      return;
+    }
+    el.innerHTML = list.map(ytCardHTML).join('');
+  }
+
+  function ytVideoRowHTML(ch, v) {
+    var meta = ytMetaOf(ch.key);
+    var pills = '<span class="y-pill ch" data-ch="' + esc(ch.key || '') + '">' + (ch.flag || meta.flag) + ' ' + esc(ch.label || meta.name) + '</span>';
+    if (v.hot) pills += '<span class="y-pill hot">🔥 급상승</span>';
+    var pcls = v.privacy === 'scheduled' ? 'scheduled' : (v.privacy || 'public');
+    pills += '<span class="y-pill ' + esc(pcls) + '">' + esc(v.privacyIcon || '') + ' ' + esc(v.privacyLabel || '공개') + '</span>';
+    var when = v.privacy === 'scheduled' && v.scheduleAt
+      ? '예약 ' + ytWhen(v.scheduleAt)
+      : relTime(ytParse(v.publishedAt));
+    var dur = '';
+    if (v.durationSeconds) {
+      var s = v.durationSeconds;
+      dur = Math.floor(s / 60) + ':' + pad2(s % 60);
+    }
+    var ratio = (v.hot && v.vsAvg) ? '<span class="hot-ratio">평균 ' + v.vsAvg + '배</span>' : '';
+    return '<a class="y-vrow' + (v.hot ? ' hot' : '') + '" href="' + esc(v.url) + '" target="_blank" rel="noopener noreferrer">' +
+      '<span class="y-thumb">' +
+        '<img src="' + esc(v.thumbnail) + '" alt="" loading="lazy" referrerpolicy="no-referrer">' +
+        (dur ? '<span class="y-dur">' + dur + '</span>' : '') +
+      '</span>' +
+      '<span class="y-vbody">' +
+        '<span class="y-vtitle">' + esc(v.title || '—') + '</span>' +
+        '<span class="y-vmeta">' + pills + '<span>' + esc(when) + '</span></span>' +
+        '<span class="y-vstat">' +
+          '<span>👁 ' + ytNum(v.views) + '</span>' +
+          '<span>👍 ' + ytNum(v.likes) + '</span>' +
+          '<span>💬 ' + ytNum(v.comments) + '</span>' +
+          ratio +
+        '</span>' +
+      '</span>' +
+    '</a>';
+  }
+
+  function renderYtVideos() {
+    var el = $('#ytVideos');
+    var sub = $('#ytVideoSub');
+    if (!el) return;
+    if (!ytState.data) {
+      el.innerHTML = '<div class="y-skel"><i></i><i></i><i></i></div>';
+      if (sub) sub.textContent = '';
+      return;
+    }
+    var rows = [];
+    ytChannels().forEach(function (ch) {
+      (ch.videos || []).forEach(function (v) { rows.push({ ch: ch, v: v }); });
+    });
+    rows.sort(function (a, b) {
+      var at = ytParse(a.v.publishedAt), bt = ytParse(b.v.publishedAt);
+      return bt - at;
+    });
+    var limit = ytState.filter === 'all' ? 12 : 20;
+    var shown = rows.slice(0, limit);
+    if (sub) {
+      var hotN = shown.filter(function (r) { return r.v.hot; }).length;
+      sub.textContent = shown.length + '개' + (hotN ? ' · 🔥 ' + hotN : '') + ' / 최근 ' + rows.length + '개';
+    }
+    if (!shown.length) {
+      el.innerHTML = '<div class="y-empty"><b>최근 영상이 없습니다</b><span>업로드 목록을 읽지 못했거나 아직 영상이 없습니다.</span></div>';
+      return;
+    }
+    el.innerHTML = shown.map(function (r) { return ytVideoRowHTML(r.ch, r.v); }).join('');
+  }
+
+  function ytCommentRowHTML(ch, c) {
+    var meta = ytMetaOf(ch.key);
+    var fresh = (Date.now() - ytParse(c.publishedAt)) < 24 * HOUR;
+    var initial = (c.author || '?').replace(/^@/, '').charAt(0).toUpperCase();
+    var avatar = c.authorThumb
+      ? '<span class="y-avatar"><img src="' + esc(c.authorThumb) + '" alt="" loading="lazy" referrerpolicy="no-referrer"></span>'
+      : '<span class="y-avatar">' + esc(initial) + '</span>';
+    return '<a class="y-crow' + (fresh ? ' fresh' : '') + '" href="' + esc(c.url) + '" target="_blank" rel="noopener noreferrer">' +
+      avatar +
+      '<span class="y-cbody">' +
+        '<span class="y-chead">' +
+          '<span class="y-cauthor">' + esc(c.author || '익명') + '</span>' +
+          (fresh ? '<span class="y-new">NEW</span>' : '') +
+          '<span class="y-pill ch" data-ch="' + esc(ch.key || '') + '">' + (ch.flag || meta.flag) + '</span>' +
+          '<span style="margin-left:auto;white-space:nowrap">' + esc(relTime(ytParse(c.publishedAt))) + '</span>' +
+        '</span>' +
+        '<span class="y-ctext">' + esc(c.text || '') + '</span>' +
+        '<span class="y-cvid">🎬 ' + esc(c.videoTitle || '영상') + '</span>' +
+        '<span class="y-cfoot">👍 ' + ytNum(c.likes) + (c.replyCount ? ' · 답글 ' + c.replyCount + '개(내 답글 없음)' : '') + ' · 답글 달러 가기 ↗</span>' +
+      '</span>' +
+    '</a>';
+  }
+
+  function renderYtComments() {
+    var el = $('#ytComments');
+    var sub = $('#ytCommentSub');
+    if (!el) return;
+    if (!ytState.data) {
+      el.innerHTML = '<div class="y-skel"><i></i><i></i></div>';
+      if (sub) sub.textContent = '';
+      return;
+    }
+    var rows = [];
+    ytChannels().forEach(function (ch) {
+      (ch.comments && ch.comments.items || []).forEach(function (c) { rows.push({ ch: ch, c: c }); });
+    });
+    rows.sort(function (a, b) { return ytParse(b.c.publishedAt) - ytParse(a.c.publishedAt); });
+    var shown = rows.slice(0, 12);
+    if (sub) sub.textContent = (rows.length ? rows.length + '건' : '없음') + ' · 채널당 최근 25건 확인';
+    if (!shown.length) {
+      var anyErr = ytChannels().some(function (c) { return c.comments && c.comments.error; });
+      el.innerHTML = '<div class="y-empty">' +
+        '<b>답글 없는 새 댓글이 없습니다</b>' +
+        '<span>' + (anyErr ? '일부 채널의 댓글을 읽지 못했습니다.' : '최근 댓글 ' + (ytState.data ? ytChannels().reduce(function (n, c) { return n + ((c.comments && c.comments.scanned) || 0); }, 0) : 0) + '건을 확인했고, 모두 답글이 있습니다.') + '</span>' +
+      '</div>';
+      return;
+    }
+    el.innerHTML = shown.map(function (r) { return ytCommentRowHTML(r.ch, r.c); }).join('');
+  }
+
+  function renderYoutube() {
+    var root = $('#youtubeView');
+    if (!root) return;
+    var btn = $('#ytRefresh');
+    if (btn) {
+      btn.classList.toggle('spin', ytState.loading);
+      btn.disabled = ytState.loading;
+      btn.setAttribute('aria-busy', ytState.loading ? 'true' : 'false');
+      var lbl = btn.querySelector('.c-refresh-label');
+      if (lbl) lbl.textContent = ytState.loading ? '불러오는 중…' : '실시간 새로고침';
+    }
+    var sync = $('#ytSynced');
+    if (sync) {
+      if (ytState.loading && !ytState.data) {
+        sync.textContent = '유튜브에서 통계를 불러오는 중…';
+        sync.removeAttribute('data-state');
+      } else if (ytState.error && !ytState.data) {
+        sync.textContent = '유튜브 읽기 실패 · ' + ytState.error;
+        sync.setAttribute('data-state', 'error');
+      } else if (ytState.data) {
+        sync.removeAttribute('data-state');
+        var sm = ytState.data.summary || {};
+        sync.innerHTML = '마지막 새로고침 <b>' + esc(ytClock(ytState.fetchedAt)) + '</b> (' + esc(relTime(ytState.fetchedAt)) + ')' +
+          ' · 구독 <b>' + ytNum(sm.subscribers) + '</b> · 7일 조회 <b>' + ytNum(sm.views7d) + '</b>' +
+          (ytState.error ? ' · <span style="color:#fdba74">일부 채널 읽기 실패</span>' : '');
+      } else {
+        sync.textContent = '유튜브에서 통계를 불러오는 중…';
+      }
+    }
+    $$('#ytFilter button').forEach(function (x) {
+      x.setAttribute('aria-pressed', x.getAttribute('data-f') === ytState.filter ? 'true' : 'false');
+    });
+    renderYtChannels();
+    renderYtVideos();
+    renderYtComments();
+  }
+
+  function bindYoutube() {
+    var filter = $('#ytFilter');
+    if (filter) {
+      filter.addEventListener('click', function (e) {
+        var b = e.target.closest('button[data-f]');
+        if (!b) return;
+        ytState.filter = b.getAttribute('data-f');
+        renderYoutube();
+      });
+    }
+    var refresh = $('#ytRefresh');
+    if (refresh) refresh.addEventListener('click', function () { ytFetch(true); });
+    var box = $('#youtubeView');
+    if (box) {
+      box.addEventListener('click', function (e) {
+        if (e.target.closest('[data-act="retry"]')) ytFetch(true);
+      });
+    }
+  }
+
   /* 채널방과 회의실의 화면·컴포저를 서로 섮이지 않게 전환한다 */
   function applyRoomMode() {
     var quota = isQuotaRoom();
     var cal = isCalendarRoom();
-    var channel = quota || cal;
+    var yt = isYoutubeRoom();
+    var channel = quota || cal || yt;
     document.body.classList.toggle('quota-mode', quota);
     document.body.classList.toggle('calendar-mode', cal);
+    document.body.classList.toggle('yt-mode', yt);
     var qv = $('#quotaView');
     if (qv) qv.hidden = !quota;
     var cv = $('#calendarView');
     if (cv) cv.hidden = !cal;
+    var yv = $('#youtubeView');
+    if (yv) yv.hidden = !yt;
     var sum = $('#summaryBar');
     if (sum) sum.hidden = channel;
     var comp = $('#composer');
@@ -1331,7 +1669,7 @@
     var sBtn = $('#searchBtn');
     if (sBtn) sBtn.hidden = channel;
     var meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute('content', cal ? '#0f1115' : '#f2f3f5');
+    if (meta) meta.setAttribute('content', (cal || yt) ? '#0f1115' : '#f2f3f5');
     if (channel) {
       $('#chatView').hidden = true;
       $('#dashboard').hidden = true;
@@ -1342,6 +1680,9 @@
     }
     if (cal && !calState.inFlight && (!calState.started || (Date.now() - calState.lastAttempt) > 5 * 60 * 1000)) {
       calFetch(false);
+    }
+    if (yt && !ytState.inFlight && (!ytState.started || (Date.now() - ytState.lastAttempt) > 60 * 1000)) {
+      ytFetch(false);
     }
   }
 
@@ -1376,8 +1717,8 @@
       closeDrawer();
       renderAll();
       setDashboard(false);
-      if (!isQuotaRoom() && !isCalendarRoom()) scrollToBottom();
-      toast('# ' + r.name + ((r.slug === QUOTA_SLUG || r.slug === CAL_SLUG) ? ' 채널방으로 이동했습니다.' : ' 회의실로 이동했습니다.'));
+      if (!isQuotaRoom() && !isCalendarRoom() && !isYoutubeRoom()) scrollToBottom();
+      toast('# ' + r.name + ((r.slug === QUOTA_SLUG || r.slug === CAL_SLUG || r.slug === YT_SLUG) ? ' 채널방으로 이동했습니다.' : ' 회의실로 이동했습니다.'));
     } else {
       closeDrawer();
     }
@@ -1404,11 +1745,11 @@
     if (chEl) {
       chEl.innerHTML = '';
       var qc = quotaCounts();
-      state.rooms.filter(function (r) { return r.slug === QUOTA_SLUG || r.slug === CAL_SLUG; }).forEach(function (r) {
+      state.rooms.filter(function (r) { return r.slug === QUOTA_SLUG || r.slug === CAL_SLUG || r.slug === YT_SLUG; }).forEach(function (r) {
         var b = document.createElement('button');
         b.type = 'button';
         b.className = 'room-item channel' + (r.id === state.activeRoomId ? ' active' : '') +
-          (r.slug === CAL_SLUG ? ' cal' : '');
+          (r.slug === CAL_SLUG ? ' cal' : '') + (r.slug === YT_SLUG ? ' yt' : '');
         var badge;
         if (r.slug === CAL_SLUG) {
           if (!calState.started && !calState.loading) badge = '달력';
@@ -1418,6 +1759,14 @@
             var cs = calMonthStats();
             badge = cs.total ? (+cs.month.slice(5, 7)) + '월 ' + cs.total + '건' : '일정 없음';
           }
+        } else if (r.slug === YT_SLUG) {
+          var ysum = ytState.data && ytState.data.summary;
+          if (!ytState.started && !ytState.loading) badge = '대시보드';
+          else if (ytState.loading && !ysum) badge = '불러오는 중';
+          else if (ytState.error && !ysum) badge = '읽기 실패';
+          else if (ysum) {
+            badge = ysum.unanswered ? '미응답 ' + ysum.unanswered : '구독 ' + ytNum(ysum.subscribers);
+          } else badge = '대시보드';
         } else {
           var warn = qc.limited + qc.error;
           badge = !qc.total ? '실측 전' : (warn > 0 ? warn + ' 주의' : qc.total + '개 API');
@@ -1448,6 +1797,28 @@
         row.innerHTML = '<span class="dot" data-state="' + (CAL_DRAWER_STATE[it.status] || 'unknown') + '"></span>' +
           '<span class="da-name">' + esc(it.time) + ' ' + chMeta.flag + ' ' + esc(it.episode || it.title) + '</span>' +
           '<span class="da-pct">' + esc(stMeta.short) + '</span>';
+        listEl.appendChild(row);
+      });
+      return;
+    }
+    if (isYoutubeRoom()) {
+      var ytRows = [];
+      ((ytState.data && ytState.data.channels) || []).forEach(function (c) {
+        ((c.comments && c.comments.items) || []).forEach(function (cm) { ytRows.push({ ch: c, cm: cm }); });
+      });
+      ytRows.sort(function (a, b) { return ytParse(b.cm.publishedAt) - ytParse(a.cm.publishedAt); });
+      if (lbl) lbl.textContent = '미응답 댓글';
+      $('#drawerMemberCount').textContent = ytRows.length;
+      if (!ytRows.length) {
+        listEl.innerHTML = '<p class="set-hint">' + (ytState.data ? '답글 없는 새 댓글이 없습니다.' : '유튜브 통계를 불러오는 중…') + '</p>';
+      }
+      ytRows.slice(0, 8).forEach(function (r) {
+        var row = document.createElement('div');
+        row.className = 'da-row';
+        var meta = ytMetaOf(r.ch.key);
+        row.innerHTML = '<span class="dot" data-state="risk"></span>' +
+          '<span class="da-name">' + (r.ch.flag || meta.flag) + ' ' + esc(r.cm.author || '익명') + ' — ' + esc(String(r.cm.text || '').slice(0, 34)) + '</span>' +
+          '<span class="da-pct">' + esc(relTime(ytParse(r.cm.publishedAt))) + '</span>';
         listEl.appendChild(row);
       });
       return;
@@ -1546,6 +1917,10 @@
       renderCalendar();
       return;
     }
+    if (isYoutubeRoom()) {
+      renderYoutube();
+      return;
+    }
     renderSummary();
     renderMentionChips();
     if (ui.dashboardOpen) renderDashboard(); else renderChat();
@@ -1553,7 +1928,7 @@
 
   /* ── message actions ─────────────────────────────────────── */
   async function sendMessage() {
-    if (isQuotaRoom() || isCalendarRoom()) { toast('이 채널방은 읽기 전용입니다.'); return; }
+    if (isQuotaRoom() || isCalendarRoom() || isYoutubeRoom()) { toast('이 채널방은 읽기 전용입니다.'); return; }
     var input = $('#composerInput');
     var text = input.value.trim();
     var room = currentRoom();
@@ -2291,6 +2666,7 @@
     }
 
     bindCalendar();
+    bindYoutube();
 
     $('#dashBody').addEventListener('click', function (e) {
       var btn = e.target.closest('[data-act="edit"]');
@@ -2460,6 +2836,10 @@
           if ((Date.now() - calState.lastAttempt) > 60 * 1000) calFetch(false);
           else { renderTop(); renderCalendar(); }
         }
+        else if (isYoutubeRoom()) {
+          if ((Date.now() - ytState.lastAttempt) > 60 * 1000) ytFetch(false);
+          else { renderTop(); renderYoutube(); }
+        }
         else if (ui.dashboardOpen) renderDashboard();
       }
     });
@@ -2514,12 +2894,15 @@
       if (!ui.dashboardOpen) settleAtBottom();
       // 📅 업로드-캘린더 일정은 방에 들어가기 전에 미리 받아 둔다(드로어 배지·첫 화면이 바로 채워지게)
       calFetch(false);
+      // 📺 유튜브-대시보드 통계도 같이 미리 받아 둔다(피클 토큰 0)
+      ytFetch(false);
     });
 
     setInterval(function () {
       renderSummary();
       if (isQuotaRoom()) { renderTop(); renderQuota(); }
       else if (isCalendarRoom()) { renderTop(); }
+      else if (isYoutubeRoom()) { renderTop(); }
       else if (ui.dashboardOpen) renderDashboard();
       // 활동 시각이 오래된 비서의 온라인 표시 갱신
       var room = currentRoom();

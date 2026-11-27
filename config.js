@@ -10,5 +10,8 @@ window.PICKLE_ROOM_CONFIG = {
   /* 📅 업로드-캘린더 방이 노션 '📅 06 - 업로드 캘린더' 일정을 읽어오는 Edge Function.
      노션 키(NOTION_API_KEY)는 이 함수의 Secrets 에만 있습니다. */
   calendarFunctionUrl: 'https://fbmgkbspiswuekvlhpth.supabase.co/functions/v1/get-upload-calendar',
-  appVersion: '1.5.4'
+  /* 📺 유튜브-대시보드 방이 두 채널(별별해외이슈·ショッと見て)의 YouTube Data·Analytics 통계를 읽어오는 Edge Function.
+     OAuth 클라이언트 시크릿과 두 채널의 리프레시 토큰은 이 함수의 Secrets 에만 있습니다. */
+  youtubeFunctionUrl: 'https://fbmgkbspiswuekvlhpth.supabase.co/functions/v1/get-youtube-dashboard',
+  appVersion: '1.6.0'
 };
