@@ -10,10 +10,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="비서 회의실" />
   <title># 비서-통합-회의실</title>
-  <link rel="manifest" href="manifest.webmanifest?v=1.4.2" />
+  <link rel="manifest" href="manifest.webmanifest?v=1.5.0" />
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="styles.css?v=1.4.2" />
+  <link rel="stylesheet" href="styles.css?v=1.5.0" />
 </head>
 <body>
   <div class="app" id="app">
@@ -134,6 +134,58 @@
             <div class="q-run-list" id="quotaRuns"></div>
           </section>
           <p class="q-note">잔여 %는 OpenRouter·Groq·Pixabay처럼 API가 직접 돌려준 값과, 기준 무료 한도에서 누적 사용량을 뺀 <b>예상</b>(줄무늬)으로 나뉩니다. 사용량은 이 방의 실측이 성공(HTTP 200)할 때마다 1회씩 누적되고, 노션 제작 기록의 외부 사용분도 같은 누적에 합산됩니다. 기간(일/월)이 바뀌면 0부터 다시 셉니다. 한도가 공개되지 않은 제공자는 % 없이 상태만 표시합니다. 무료 한도는 서비스 정책에 따라 바뀔 수 있습니다.</p>
+        </div>
+      </section>
+      <!-- ── 📅 업로드-캘린더 채널방 (노션 일정 · 피클 토큰 미소모) ── -->
+      <section class="calroom" id="calendarView" hidden aria-label="업로드 캘린더">
+        <div class="c-scroll" id="calScroll">
+          <div class="c-head">
+            <div class="c-head-text">
+              <h2><span aria-hidden="true">📅</span> 업로드 캘린더</h2>
+              <p class="c-sync" id="calSynced">노션에서 일정을 불러오는 중…</p>
+            </div>
+            <button class="c-refresh" id="calRefresh" type="button" aria-label="노션에서 새로고침">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v5h-5"/></svg>
+              <span class="c-refresh-label">노션 새로고침</span>
+            </button>
+          </div>
+
+          <div class="c-filter" id="calFilter" role="group" aria-label="채널 필터">
+            <button type="button" data-f="all" aria-pressed="true">전체</button>
+            <button type="button" data-f="kr" aria-pressed="false">🇰🇷 별별해외이슈</button>
+            <button type="button" data-f="jp" aria-pressed="false">🇯🇵 ショッと見て</button>
+          </div>
+
+          <div class="c-layout">
+            <section class="c-pane c-left" aria-label="월간 달력">
+              <div class="c-stepper">
+                <button class="c-icon-btn" id="calPrev" type="button" aria-label="이전 달">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+                </button>
+                <h3 id="calMonth" aria-live="polite">—</h3>
+                <button class="c-icon-btn" id="calNext" type="button" aria-label="다음 달">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+                </button>
+                <button class="c-today-btn" id="calToday" type="button">오늘</button>
+              </div>
+              <div class="c-monthbar" id="calMonthbar"></div>
+              <div class="c-cal">
+                <div class="c-dow" aria-hidden="true"><div>일</div><div>월</div><div>화</div><div>수</div><div>목</div><div>금</div><div>토</div></div>
+                <div class="c-grid" id="calGrid" role="grid" aria-label="월간 업로드 달력"></div>
+                <div class="c-legend">
+                  <span><i class="c-dot" data-s="done"></i>공개 완료</span>
+                  <span><i class="c-dot" data-s="scheduled"></i>예약</span>
+                  <span><i class="c-dot" data-s="missing"></i>미제작</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="c-pane c-right" aria-label="선택한 날짜 상세">
+              <div class="c-detail" id="calDetail"></div>
+            </section>
+          </div>
+
+          <p class="c-foot">노션 <b>📅 06 - 업로드 캘린더</b>를 Edge Function이 직접 읽습니다 · 피클 토큰을 쓰지 않습니다 · 노션 키는 서버에만 있습니다.</p>
         </div>
       </section>
     </main>
@@ -407,7 +459,7 @@
             <button class="btn ghost" id="refreshBtn2">서버에서 새로고침</button>
           </div>
         </section>
-        <p class="app-version">비서 통합 회의실 · v<span id="appVersion">1.4.2</span> · Supabase 실시간</p>
+        <p class="app-version">비서 통합 회의실 · v<span id="appVersion">1.5.0</span> · Supabase 실시간</p>
       </div>
     </div>
   </div>
@@ -442,7 +494,7 @@
         <button class="menu-item" id="exportBtn"><span>JSON 내보내기</span><small>현재 회의실 데이터를 파일로 저장</small></button>
         <button class="menu-item" id="refreshBtn"><span>서버에서 새로고침</span><small>Supabase에서 최신 데이터를 다시 불러옵니다</small></button>
         <button class="menu-item" id="installBtn" hidden><span>홈 화면에 추가</span><small>앱처럼 전체 화면으로 실행합니다</small></button>
-        <button class="menu-item" id="aboutBtn"><span>앱 정보</span><small>v1.2.5 · Supabase 실시간 연동</small></button>
+        <button class="menu-item" id="aboutBtn"><span>앱 정보</span><small>v1.5.0 · Supabase 실시간 연동</small></button>
       </div>
     </div>
   </div>
@@ -538,8 +590,8 @@
       });
     })();
   </script>
-  <script src="config.js?v=1.4.2"></script>
+  <script src="config.js?v=1.5.0"></script>
   <script src="vendor/supabase.js"></script>
-  <script src="app.js?v=1.4.2"></script>
+  <script src="app.js?v=1.5.0"></script>
 </body>
 </html>

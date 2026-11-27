@@ -519,6 +519,17 @@
     var c = counts();
     $('#roomTitle').textContent = room ? room.name : '회의실';
     document.title = room ? '# ' + room.name : '# 비서-통합-회의실';
+    if (room && room.slug === CAL_SLUG) {
+      var cs = calMonthStats();
+      $('#roomMeta').textContent = (calState.loading && !calState.items.length)
+        ? '노션에서 불러오는 중…'
+        : ((calState.error && !calState.items.length)
+          ? '노션 읽기 실패'
+          : (+cs.month.slice(5, 7)) + '월 ' + cs.total + '건 · 공개 ' + cs.done + ' · 예약 ' + cs.scheduled +
+            (cs.missing ? ' · 미제작 ' + cs.missing : ''));
+      $('#memberCount').textContent = String(cs.total);
+      return;
+    }
     if (room && room.slug === QUOTA_SLUG) {
       var qc = quotaCounts();
       var lastAt = lastMeasuredAt();
@@ -615,7 +626,7 @@
 
   function renderChat(opts) {
     opts = opts || {};
-    if (isQuotaRoom()) return;   // 이 채널방은 카드 화면을 따로 쓴다
+    if (isQuotaRoom() || isCalendarRoom()) return;   // 채널방은 각자의 화면을 따로 쓴다
     var list = $('#chatList');
     var chatEl = $('#chatView');
     var room = currentRoom();
@@ -977,27 +988,353 @@
     }
   }
 
+  /* ── 📅 업로드-캘린더 채널방 (노션 일정 · Edge Function이 노션을 읽는다) ── */
+  var CAL_SLUG = 'upload-calendar';
+  var CAL_DOW = ['일', '월', '화', '수', '목', '금', '토'];
+  var CAL_CH = {
+    kr: { flag: '🇰🇷', name: '별별해외이슈' },
+    jp: { flag: '🇯🇵', name: 'ショッと見て' },
+    etc: { flag: '🗓', name: '기타' }
+  };
+  var CAL_STATUS = {
+    done: { label: '공개 완료', icon: '✅', short: '공개' },
+    scheduled: { label: '예약됨', icon: '⏳', short: '예약' },
+    warn: { label: '보완 필요', icon: '⚠️', short: '보완' },
+    missing: { label: '미제작', icon: '⛔', short: '누락' },
+    unknown: { label: '확인 필요', icon: '•', short: '확인' }
+  };
+  var CAL_DRAWER_STATE = { done: 'ok', scheduled: 'soon', missing: 'risk', warn: 'risk', unknown: 'unknown' };
+  var calState = {
+    items: [], fetchedAt: 0, lastAttempt: 0, source: null, error: null,
+    loading: false, started: false, inFlight: false,
+    month: '', selected: '', filter: 'all'
+  };
+
+  function isCalendarRoom() {
+    var r = currentRoom();
+    return !!(r && r.slug === CAL_SLUG);
+  }
+  function calPad(n) { return (n < 10 ? '0' : '') + n; }
+  function calDateKey(d) { return d.getFullYear() + '-' + calPad(d.getMonth() + 1) + '-' + calPad(d.getDate()); }
+  function calTodayKey() { return calDateKey(new Date()); }
+  function calMonthOf(key) { return (key || calTodayKey()).slice(0, 7); }
+  function calMonthLabel(mk) { return (+mk.slice(0, 4)) + '년 ' + (+mk.slice(5, 7)) + '월'; }
+  function calShiftMonth(mk, delta) {
+    var y = +mk.slice(0, 4), m = +mk.slice(5, 7) - 1 + delta;
+    var d = new Date(y, m, 1);
+    return d.getFullYear() + '-' + calPad(d.getMonth() + 1);
+  }
+  function calFiltered() {
+    return calState.items.filter(function (it) {
+      return calState.filter === 'all' || it.channel === calState.filter;
+    });
+  }
+  function calItemsOn(key) {
+    return calFiltered().filter(function (it) { return it.date === key; });
+  }
+  function calTally(list) {
+    var t = { total: list.length, done: 0, scheduled: 0, missing: 0, warn: 0, unknown: 0 };
+    list.forEach(function (it) { if (t[it.status] != null) t[it.status]++; });
+    return t;
+  }
+  function calDotStatus(list) {
+    if (!list.length) return '';
+    var has = function (s) { return list.some(function (i) { return i.status === s; }); };
+    if (has('missing')) return 'missing';
+    if (has('warn')) return 'warn';
+    if (has('scheduled')) return 'scheduled';
+    if (has('done')) return 'done';
+    return 'unknown';
+  }
+  function calMonthStats() {
+    var mk = calState.month || calMonthOf(calState.selected || calTodayKey());
+    var t = calTally(calState.items.filter(function (it) { return (it.date || '').slice(0, 7) === mk; }));
+    t.month = mk;
+    return t;
+  }
+
+  async function calFetch(force) {
+    var url = CFG.calendarFunctionUrl || '';
+    if (!url) { calState.error = '캘린더 함수 주소가 설정되지 않았습니다.'; renderCalendar(); return; }
+    if (calState.inFlight) return;
+    calState.inFlight = true;
+    calState.loading = true;
+    calState.lastAttempt = Date.now();
+    renderCalendar();
+    renderTop();
+    try {
+      var res = await fetch(url + (force ? '?refresh=1' : ''), {
+        headers: {
+          apikey: CFG.supabaseAnonKey || '',
+          Authorization: 'Bearer ' + (CFG.supabaseAnonKey || '')
+        },
+        cache: 'no-store'
+      });
+      var data = null;
+      try { data = await res.json(); } catch (e) { data = null; }
+      if (!res.ok || !data || data.ok === false) {
+        throw new Error((data && data.message) || ('HTTP ' + res.status));
+      }
+      calState.items = Array.isArray(data.items) ? data.items : [];
+      calState.source = data.source || null;
+      calState.fetchedAt = data.fetchedAt ? (Date.parse(data.fetchedAt) || Date.now()) : Date.now();
+      calState.error = null;
+      if (!calState.selected) calState.selected = calTodayKey();
+      if (!calState.month) calState.month = calMonthOf(calState.selected);
+      if (force) toast('노션 일정을 새로 불러왔습니다 · ' + calState.items.length + '건');
+    } catch (err) {
+      calState.error = (err && err.message) || String(err);
+      if (force) toast('노션 일정을 불러오지 못했습니다: ' + calState.error);
+    } finally {
+      calState.inFlight = false;
+      calState.loading = false;
+      calState.started = true;
+      renderCalendar();
+      renderTop();
+      renderDrawer();
+    }
+  }
+
+  function renderCalendar() {
+    var root = $('#calendarView');
+    if (!root) return;
+    var btn = $('#calRefresh');
+    if (btn) {
+      btn.classList.toggle('spin', calState.loading);
+      btn.disabled = calState.loading;
+      btn.setAttribute('aria-busy', calState.loading ? 'true' : 'false');
+      var lbl = btn.querySelector('.c-refresh-label');
+      if (lbl) lbl.textContent = calState.loading ? '동기화 중…' : '노션 새로고침';
+    }
+    var syncEl = $('#calSynced');
+    if (syncEl) {
+      if (calState.loading && !calState.items.length) {
+        syncEl.textContent = '노션에서 일정을 불러오는 중…';
+        syncEl.removeAttribute('data-state');
+      } else if (calState.error) {
+        syncEl.textContent = '노션 읽기 실패 · ' + calState.error;
+        syncEl.setAttribute('data-state', 'error');
+      } else if (calState.fetchedAt) {
+        var edited = calState.source && calState.source.lastEditedTime ? Date.parse(calState.source.lastEditedTime) : 0;
+        syncEl.innerHTML = '노션 <b>' + esc(fmtClock(calState.fetchedAt)) + '</b> 동기화 · ' + esc(relTime(calState.fetchedAt)) +
+          (edited ? ' · 노션 수정 ' + esc(relTime(edited)) : '');
+        syncEl.removeAttribute('data-state');
+      } else {
+        syncEl.textContent = '아직 동기화하지 않았습니다.';
+        syncEl.removeAttribute('data-state');
+      }
+    }
+    if (!calState.month) calState.month = calMonthOf(calState.selected || calTodayKey());
+    if (!calState.selected) calState.selected = calTodayKey();
+    renderCalMonthbar();
+    renderCalGrid();
+    renderCalDetail();
+  }
+
+  function renderCalMonthbar() {
+    var el = $('#calMonthbar');
+    if (!el) return;
+    var mk = calState.month || calMonthOf(calTodayKey());
+    var t = calTally(calFiltered().filter(function (it) { return (it.date || '').slice(0, 7) === mk; }));
+    var label = calState.filter === 'all' ? '' : ' · ' + (CAL_CH[calState.filter] ? CAL_CH[calState.filter].name : '');
+    if (!t.total) {
+      el.innerHTML = '<span class="c-mb-label">' + (+mk.slice(5, 7)) + '월<b>' + esc(label) + '</b></span><span class="c-mb-empty">등록된 일정 없음</span>';
+      return;
+    }
+    el.innerHTML = '<span class="c-mb-label">' + (+mk.slice(5, 7)) + '월<b>' + esc(label) + '</b></span>' +
+      '<span class="c-mb">총 <b>' + t.total + '</b>건</span>' +
+      '<span class="c-mb ok"><i class="c-dot" data-s="done"></i>' + t.done + '</span>' +
+      '<span class="c-mb wait"><i class="c-dot" data-s="scheduled"></i>' + t.scheduled + '</span>' +
+      (t.missing ? '<span class="c-mb miss"><i class="c-dot" data-s="missing"></i>' + t.missing + '</span>' : '') +
+      (t.warn ? '<span class="c-mb warn"><i class="c-dot" data-s="warn"></i>' + t.warn + '</span>' : '');
+  }
+
+  function renderCalGrid() {
+    var grid = $('#calGrid');
+    if (!grid) return;
+    var mk = calState.month || calMonthOf(calTodayKey());
+    var y = +mk.slice(0, 4), m = +mk.slice(5, 7);
+    var monthEl = $('#calMonth');
+    if (monthEl) monthEl.textContent = calMonthLabel(mk);
+    var startDow = new Date(y, m - 1, 1).getDay();
+    var days = new Date(y, m, 0).getDate();
+    var cells = Math.ceil((startDow + days) / 7) * 7;
+    var today = calTodayKey();
+    var html = '';
+    for (var i = 0; i < cells; i++) {
+      var d = new Date(y, m - 1, 1 - startDow + i);
+      var key = calDateKey(d);
+      var out = d.getMonth() !== m - 1;
+      var list = out ? [] : calItemsOn(key);
+      var cls = 'c-day' + (out ? ' out' : '') + (d.getDay() === 0 ? ' sun' : '') + (d.getDay() === 6 ? ' sat' : '') +
+        (key === today ? ' today' : '') + (key === calState.selected ? ' sel' : '');
+      var label = (d.getMonth() + 1) + '월 ' + d.getDate() + '일';
+      var chips = '';
+      ['kr', 'jp', 'etc'].forEach(function (ch) {
+        if (calState.filter !== 'all' && calState.filter !== ch) return;
+        var part = list.filter(function (it) { return it.channel === ch; });
+        if (!part.length) return;
+        var done = part.filter(function (it) { return it.status === 'done'; }).length;
+        var st = calDotStatus(part);
+        var meta = CAL_CH[ch] || CAL_CH.etc;
+        chips += '<span class="c-chip" data-s="' + st + '"><span class="cf" aria-hidden="true">' + meta.flag + '</span>' +
+          '<b>' + done + '</b>/' + part.length + '<i class="c-dot" data-s="' + st + '"></i></span>';
+        label += ', ' + meta.name + ' ' + part.length + '건 중 ' + done + '건 공개';
+      });
+      if (list.length) label += ' · 업로드 ' + list.length + '건';
+      html += '<button type="button" role="gridcell" class="' + cls + '" data-date="' + key + '"' +
+        ' aria-selected="' + (key === calState.selected ? 'true' : 'false') + '"' +
+        (out ? ' tabindex="-1" aria-disabled="true"' : '') +
+        ' aria-label="' + esc(label) + '">' +
+        '<span class="c-num">' + d.getDate() + '</span>' +
+        (chips ? '<span class="c-chips">' + chips + '</span>' : '') + '</button>';
+    }
+    grid.innerHTML = html;
+  }
+
+  function renderCalDetail() {
+    var el = $('#calDetail');
+    if (!el) return;
+    if (calState.loading && !calState.items.length) {
+      el.innerHTML = '<div class="c-empty">노션에서 일정을 불러오는 중…</div>';
+      return;
+    }
+    if (calState.error && !calState.items.length) {
+      el.innerHTML = '<div class="c-empty c-err"><b>노션 일정을 불러오지 못했습니다</b><span>' + esc(calState.error) + '</span>' +
+        '<button type="button" class="c-btn" data-act="retry">다시 시도</button></div>';
+      return;
+    }
+    var key = calState.selected || calTodayKey();
+    var parts = key.split('-');
+    var d = new Date(+parts[0], +parts[1] - 1, +parts[2]);
+    var list = calItemsOn(key);
+    var t = calTally(list);
+    var isToday = key === calTodayKey();
+    var h = '<div class="c-detail-head">' +
+      '<h3>' + (d.getMonth() + 1) + '월 ' + d.getDate() + '일 (' + CAL_DOW[d.getDay()] + ')' +
+      (isToday ? '<span class="c-today-badge">오늘</span>' : '') + '</h3>' +
+      '<p class="c-sum">' + (t.total
+        ? '업로드 <b>' + t.total + '</b>건 · 공개 <b>' + t.done + '</b>' +
+          (t.scheduled ? ' · 예약 <b>' + t.scheduled + '</b>' : '') +
+          (t.missing ? ' · <b class="miss">미제작 ' + t.missing + '</b>' : '') +
+          (t.warn ? ' · <b class="warn">보완 ' + t.warn + '</b>' : '')
+        : '등록된 업로드가 없습니다') + '</p></div>';
+    if (!list.length) {
+      h += '<div class="c-empty">이 날짜에 잡힌 업로드가 없습니다.<br><span>노션 캘린더에 일정을 넣으면 여기에 바로 나타납니다.</span></div>' +
+        (isToday ? '' : '<button type="button" class="c-btn block" data-act="today">오늘로 돌아가기</button>');
+    } else {
+      h += '<ol class="c-tl">' + list.map(function (it) {
+        var st = CAL_STATUS[it.status] || CAL_STATUS.unknown;
+        var ch = CAL_CH[it.channel] || CAL_CH.etc;
+        var url = it.url || '';
+        return '<li class="c-tl-item" data-s="' + esc(it.status) + '">' +
+          '<div class="c-time">' + esc(it.time || '—') + '</div>' +
+          '<article class="c-card" data-s="' + esc(it.status) + '">' +
+            '<div class="c-card-top">' +
+              '<span class="c-badge ch" data-ch="' + esc(it.channel) + '">' + ch.flag + ' ' + esc(ch.name) + '</span>' +
+              (it.episode ? '<span class="c-badge code">' + esc(it.episode) + '</span>' : '') +
+              '<span class="c-badge st" data-s="' + esc(it.status) + '">' + st.icon + ' ' + esc(st.label) + '</span>' +
+            '</div>' +
+            '<p class="c-title">' + esc(it.title || '—') + '</p>' +
+            '<div class="c-card-foot">' +
+              (url
+                ? '<a class="c-yt" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">YouTube에서 열기 ↗</a>'
+                : '<span class="c-yt off">영상 링크 없음</span>') +
+              (it.note ? '<span class="c-note">' + esc(it.note) + '</span>' : '') +
+            '</div>' +
+          '</article></li>';
+      }).join('') + '</ol>';
+    }
+    el.innerHTML = h;
+  }
+
+  function bindCalendar() {
+    var filter = $('#calFilter');
+    if (filter) {
+      filter.addEventListener('click', function (e) {
+        var b = e.target.closest('button[data-f]');
+        if (!b) return;
+        calState.filter = b.getAttribute('data-f');
+        $$('#calFilter button').forEach(function (x) {
+          x.setAttribute('aria-pressed', x === b ? 'true' : 'false');
+        });
+        renderCalendar();
+      });
+    }
+    var prev = $('#calPrev');
+    if (prev) prev.addEventListener('click', function () {
+      calState.month = calShiftMonth(calState.month || calMonthOf(calState.selected), -1);
+      renderCalendar();
+    });
+    var next = $('#calNext');
+    if (next) next.addEventListener('click', function () {
+      calState.month = calShiftMonth(calState.month || calMonthOf(calState.selected), 1);
+      renderCalendar();
+    });
+    var today = $('#calToday');
+    if (today) today.addEventListener('click', function () {
+      calState.selected = calTodayKey();
+      calState.month = calMonthOf(calState.selected);
+      renderCalendar();
+      renderTop();
+    });
+    var grid = $('#calGrid');
+    if (grid) {
+      grid.addEventListener('click', function (e) {
+        var cell = e.target.closest('[data-date]');
+        if (!cell || cell.classList.contains('out')) return;
+        calState.selected = cell.getAttribute('data-date');
+        calState.month = calMonthOf(calState.selected);
+        renderCalendar();
+        renderTop();
+      });
+    }
+    var detail = $('#calDetail');
+    if (detail) {
+      detail.addEventListener('click', function (e) {
+        if (e.target.closest('[data-act="retry"]')) { calFetch(true); return; }
+        if (e.target.closest('[data-act="today"]')) {
+          calState.selected = calTodayKey();
+          calState.month = calMonthOf(calState.selected);
+          renderCalendar();
+        }
+      });
+    }
+    var refresh = $('#calRefresh');
+    if (refresh) refresh.addEventListener('click', function () { calFetch(true); });
+  }
+
   /* 채널방과 회의실의 화면·컴포저를 서로 섮이지 않게 전환한다 */
   function applyRoomMode() {
     var quota = isQuotaRoom();
+    var cal = isCalendarRoom();
+    var channel = quota || cal;
     document.body.classList.toggle('quota-mode', quota);
+    document.body.classList.toggle('calendar-mode', cal);
     var qv = $('#quotaView');
     if (qv) qv.hidden = !quota;
+    var cv = $('#calendarView');
+    if (cv) cv.hidden = !cal;
     var sum = $('#summaryBar');
-    if (sum) sum.hidden = quota;
+    if (sum) sum.hidden = channel;
     var comp = $('#composer');
-    if (comp) comp.hidden = quota;
+    if (comp) comp.hidden = channel;
     var members = $('#membersBtn');
-    if (members) members.hidden = quota;
+    if (members) members.hidden = channel;
     var sBtn = $('#searchBtn');
-    if (sBtn) sBtn.hidden = quota;
-    if (quota) {
+    if (sBtn) sBtn.hidden = channel;
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', cal ? '#0f1115' : '#f2f3f5');
+    if (channel) {
       $('#chatView').hidden = true;
       $('#dashboard').hidden = true;
       if (ui.searchOpen) closeSearch();
     } else {
       $('#chatView').hidden = !!ui.dashboardOpen;
       $('#dashboard').hidden = !ui.dashboardOpen;
+    }
+    if (cal && !calState.inFlight && (!calState.started || (Date.now() - calState.lastAttempt) > 5 * 60 * 1000)) {
+      calFetch(false);
     }
   }
 
@@ -1032,8 +1369,8 @@
       closeDrawer();
       renderAll();
       setDashboard(false);
-      if (!isQuotaRoom()) scrollToBottom();
-      toast('# ' + r.name + (r.slug === QUOTA_SLUG ? ' 채널방으로 이동했습니다.' : ' 회의실로 이동했습니다.'));
+      if (!isQuotaRoom() && !isCalendarRoom()) scrollToBottom();
+      toast('# ' + r.name + ((r.slug === QUOTA_SLUG || r.slug === CAL_SLUG) ? ' 채널방으로 이동했습니다.' : ' 회의실로 이동했습니다.'));
     } else {
       closeDrawer();
     }
@@ -1045,7 +1382,7 @@
     if (!state.rooms.length) {
       roomsEl.innerHTML = '<p class="set-hint">회의실을 불러오는 중…</p>';
     }
-    state.rooms.filter(function (r) { return r.slug !== QUOTA_SLUG; }).forEach(function (r) {
+    state.rooms.filter(function (r) { return r.slug !== QUOTA_SLUG && r.slug !== CAL_SLUG; }).forEach(function (r) {
       var b = document.createElement('button');
       b.type = 'button';
       b.className = 'room-item' + (r.id === state.activeRoomId ? ' active' : '');
@@ -1060,12 +1397,23 @@
     if (chEl) {
       chEl.innerHTML = '';
       var qc = quotaCounts();
-      state.rooms.filter(function (r) { return r.slug === QUOTA_SLUG; }).forEach(function (r) {
+      state.rooms.filter(function (r) { return r.slug === QUOTA_SLUG || r.slug === CAL_SLUG; }).forEach(function (r) {
         var b = document.createElement('button');
         b.type = 'button';
-        b.className = 'room-item channel' + (r.id === state.activeRoomId ? ' active' : '');
-        var warn = qc.limited + qc.error;
-        var badge = !qc.total ? '실측 전' : (warn > 0 ? warn + ' 주의' : qc.total + '개 API');
+        b.className = 'room-item channel' + (r.id === state.activeRoomId ? ' active' : '') +
+          (r.slug === CAL_SLUG ? ' cal' : '');
+        var badge;
+        if (r.slug === CAL_SLUG) {
+          if (calState.loading && !calState.items.length) badge = '동기화 중';
+          else if (calState.error && !calState.items.length) badge = '읽기 실패';
+          else {
+            var cs = calMonthStats();
+            badge = cs.total ? (+cs.month.slice(5, 7)) + '월 ' + cs.total + '건' : '일정 없음';
+          }
+        } else {
+          var warn = qc.limited + qc.error;
+          badge = !qc.total ? '실측 전' : (warn > 0 ? warn + ' 주의' : qc.total + '개 API');
+        }
         b.innerHTML = '<span class="hash">#</span><span class="rname">' + esc(r.name) + '</span>' +
           '<small>' + esc(badge) + '</small>';
         b.addEventListener('click', function () { goRoom(r); });
@@ -1077,6 +1425,25 @@
     listEl.innerHTML = '';
     var room = currentRoom();
     var lbl = $('#drawerMembersLabel');
+    if (isCalendarRoom()) {
+      var todayList = calItemsOn(calTodayKey());
+      if (lbl) lbl.textContent = '오늘 업로드';
+      $('#drawerMemberCount').textContent = todayList.length;
+      if (!todayList.length) {
+        listEl.innerHTML = '<p class="set-hint">오늘 예정된 업로드가 없습니다.</p>';
+      }
+      todayList.forEach(function (it) {
+        var row = document.createElement('div');
+        row.className = 'da-row';
+        var chMeta = CAL_CH[it.channel] || CAL_CH.etc;
+        var stMeta = CAL_STATUS[it.status] || CAL_STATUS.unknown;
+        row.innerHTML = '<span class="dot" data-state="' + (CAL_DRAWER_STATE[it.status] || 'unknown') + '"></span>' +
+          '<span class="da-name">' + esc(it.time) + ' ' + chMeta.flag + ' ' + esc(it.episode || it.title) + '</span>' +
+          '<span class="da-pct">' + esc(stMeta.short) + '</span>';
+        listEl.appendChild(row);
+      });
+      return;
+    }
     if (lbl) lbl.textContent = isQuotaRoom() ? 'API 상태' : '참여 비서';
     if (isQuotaRoom()) {
       $('#drawerMemberCount').textContent = state.quotas.length;
@@ -1163,6 +1530,14 @@
     renderDrawer();
     applyRoomMode();
     if (isQuotaRoom()) { renderQuota(); return; }
+    if (isCalendarRoom()) {
+      if (!calState.started) {
+        calState.selected = calState.selected || calTodayKey();
+        calState.month = calState.month || calMonthOf(calState.selected);
+      }
+      renderCalendar();
+      return;
+    }
     renderSummary();
     renderMentionChips();
     if (ui.dashboardOpen) renderDashboard(); else renderChat();
@@ -1170,7 +1545,7 @@
 
   /* ── message actions ─────────────────────────────────────── */
   async function sendMessage() {
-    if (isQuotaRoom()) { toast('이 채널방은 읽기 전용입니다.'); return; }
+    if (isQuotaRoom() || isCalendarRoom()) { toast('이 채널방은 읽기 전용입니다.'); return; }
     var input = $('#composerInput');
     var text = input.value.trim();
     var room = currentRoom();
@@ -1907,6 +2282,8 @@
       });
     }
 
+    bindCalendar();
+
     $('#dashBody').addEventListener('click', function (e) {
       var btn = e.target.closest('[data-act="edit"]');
       if (btn) openAssistantModal(btn.getAttribute('data-id'));
@@ -2071,6 +2448,10 @@
         if (connState !== 'live' && navigator.onLine !== false) connectRealtime();
         renderSummary();
         if (isQuotaRoom()) { renderTop(); renderQuota(); }
+        else if (isCalendarRoom()) {
+          if ((Date.now() - calState.lastAttempt) > 60 * 1000) calFetch(false);
+          else { renderTop(); renderCalendar(); }
+        }
         else if (ui.dashboardOpen) renderDashboard();
       }
     });
@@ -2127,6 +2508,7 @@
     setInterval(function () {
       renderSummary();
       if (isQuotaRoom()) { renderTop(); renderQuota(); }
+      else if (isCalendarRoom()) { renderTop(); }
       else if (ui.dashboardOpen) renderDashboard();
       // 활동 시각이 오래된 비서의 온라인 표시 갱신
       var room = currentRoom();

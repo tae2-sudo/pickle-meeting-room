@@ -7,5 +7,8 @@ window.PICKLE_ROOM_CONFIG = {
   /* 📊 AI-API-사용량 방의 '실시간 실측 새로고침' 버튼이 호출하는 Supabase Edge Function.
      API 키는 이 함수의 Secrets 에만 있고 브라우저에는 없습니다(피클 토큰도 쓰지 않음). */
   quotaFunctionUrl: 'https://fbmgkbspiswuekvlhpth.supabase.co/functions/v1/check-api-quotas',
-  appVersion: '1.4.2'
+  /* 📅 업로드-캘린더 방이 노션 '📅 06 - 업로드 캘린더' 일정을 읽어오는 Edge Function.
+     노션 키(NOTION_API_KEY)는 이 함수의 Secrets 에만 있습니다. */
+  calendarFunctionUrl: 'https://fbmgkbspiswuekvlhpth.supabase.co/functions/v1/get-upload-calendar',
+  appVersion: '1.5.0'
 };
