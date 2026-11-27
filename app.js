@@ -1549,6 +1549,7 @@
       '<div class="y-card-top"><span class="y-badge" title="' + esc(YT_CH_ORIG[ch.key] || ytName(ch)) + '">' +
         '<span class="y-flag">' + (ch.flag || meta.flag) + '</span>' + esc(ytName(ch)) + '</span></div>' +
       body +
+      (ch.publicOnly ? '<p class="y-hint">최근 7일 분석은 이 채널의 유튜브 승인이 끝나면 채워집니다.</p>' : '') +
       (chips ? '<div class="y-card-badges">' + chips + '</div>' : '') +
     '</a>';
   }

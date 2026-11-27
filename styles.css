@@ -1731,6 +1731,7 @@ body.yt-dark .y-theme .i-moon { display: block; }
 .y-card[data-ch="jp"] .y-badge { background: var(--y-jp); }
 .y-card[data-ch="sk"] .y-badge { background: var(--y-sk); }
 .y-flag { flex: 0 0 auto; font-size: 13px; line-height: 1; }
+.y-hint { margin: 10px 0 0; font-size: 12px; font-weight: 600; line-height: 1.55; color: var(--y-text-3); }
 
 .y-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
 .y-stat { min-width: 0; padding: 10px 12px; border-radius: 14px; border: 1px solid var(--y-line); background: var(--y-soft); }
