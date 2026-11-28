@@ -7,16 +7,17 @@
    v29: 📺 유튜브 대시보드 고대비 리뉴얼 — v0 시안, 라이트/다크 토글 (v1.6.6)
    v31: 🏛️ AI 팀 회의실 — 5팀장 병렬 회의(고속 2·풀 5라운드) · 최종안 복사 (v1.7.0)
    v33: 📺 유튜브 대시보드에 숏까뜨 추가 · ショッと見て → 쇼츠 좀 봐 한글 이름 (v1.8.1)
-   v35: 실시간 자동 연결 기본 해제(수동 새로고침) · 다시 그려도 스크롤 유지 · 첫 화면 유튜브 대시보드 · AI 팀 회의실 함수 연결 (v1.8.3) */
-const CACHE = 'pickle-meeting-room-v35';
+   v35: 실시간 자동 연결 기본 해제(수동 새로고침) · 다시 그려도 스크롤 유지 · 첫 화면 유튜브 대시보드 · AI 팀 회의실 함수 연결 (v1.8.3)
+   v36: 첫 화면을 저장값(startDash)과 무관하게 항상 📺 유튜브-대시보드로 강제 (v1.8.4) */
+const CACHE = 'pickle-meeting-room-v36';
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=1.8.3',
-  './config.js?v=1.8.3',
+  './styles.css?v=1.8.4',
+  './config.js?v=1.8.4',
   './vendor/supabase.js',
-  './app.js?v=1.8.3',
-  './manifest.webmanifest?v=1.8.3',
+  './app.js?v=1.8.4',
+  './manifest.webmanifest?v=1.8.4',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/maskable-512.png'

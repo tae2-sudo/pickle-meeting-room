@@ -161,7 +161,7 @@
   /* ── state ───────────────────────────────────────────────── */
   var state = { rooms: [], quotas: [], quotaRuns: [], activeRoomId: null, settings: loadSettings(), updatedAt: 0 };
   var ui = {
-    dashboardOpen: !!state.settings.startDash,
+    dashboardOpen: false,   // 첫 화면은 항상 📺 유튜브-대시보드 — 저장된 startDash 값은 쓰지 않는다(v1.8.4)
     search: '',
     searchOpen: false,
     editingId: null,
@@ -3896,9 +3896,11 @@
     if (viewParam === 'ai') { aiState.open = true; ui.aiOpen = true; }
     pendingSlug = roomParam;
 
-    /* 첫 화면은 📺 유튜브-대시보드 — 단, ?room=·?invite=·?view= 로 분명히 지정한 때는 그대로 따른다.
-       (사용자 설정의 '대시보드로 시작'을 켜 둔 경우에는 사용량 대시보드를 먼저 보여준다) */
-    if (!pendingSlug && !inviteToken && !viewParam && !state.settings.startDash) {
+    /* 첫 화면은 무조건 📺 유튜브-대시보드 — 단, ?room=·?invite=·?view= 로 분명히 지정한 때는 그대로 따른다.
+       기기에 저장된 '대시보드로 시작'(startDash) 값과 무관하게 항상 유튜브 대시보드로 연다.
+       (예전 저장값 startDash:true 때문에 사용량 요약이 먼저 열리던 문제 — v1.8.4) */
+    if (!pendingSlug && !inviteToken && !viewParam) {
+      ui.dashboardOpen = false;
       pendingSlug = YT_SLUG;
     }
 
