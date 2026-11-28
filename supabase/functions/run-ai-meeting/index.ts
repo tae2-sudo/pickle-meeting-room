@@ -503,6 +503,22 @@ function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/* 이 팀장이 쓸 수 있는 키 목록(첫 번째가 기본). Gemini 는 백업 키까지 이어 쓴다 */
+function leaderKeys(leader: Leader): string[] {
+  const out: string[] = [];
+  const push = (value: string | undefined | null) => {
+    const t = (value || "").trim();
+    if (t && !out.includes(t)) out.push(t);
+  };
+  push(Deno.env.get(leader.secret));
+  if (leader.provider === "gemini") {
+    push(Deno.env.get("GEMINI_BACKUP_API_KEY"));
+    push(Deno.env.get("GEMINI_FREE_3_API_KEY"));
+    push(Deno.env.get("GEMINI_FREE_4_API_KEY"));
+  }
+  return out;
+}
+
 async function callLeader(leader: Leader, system: string, user: string, maxTokens: number): Promise<LeaderResult> {
   const base: LeaderResult = {
     id: leader.id,
@@ -516,13 +532,15 @@ async function callLeader(leader: Leader, system: string, user: string, maxToken
     ms: null,
     text: "",
   };
-  const key = (Deno.env.get(leader.secret) || "").trim();
-  if (!key) {
+  /* Gemini 는 무료 키를 4개(기본·백업·3호·4호) 돌려 쓴다 — 한도·과부하(429/503)면 다음 키로 재시도 */
+  const keys = leaderKeys(leader);
+  if (!keys.length) {
     return { ...base, error: `Secret '${leader.secret}' 미설정`, errorCode: "secret_missing" };
   }
   let r: Probe | null = null;
   let lastError: (Error & { timeout?: boolean }) | null = null;
   for (let attempt = 0; attempt < 2; attempt++) {
+    const key = keys[Math.min(attempt, keys.length - 1)];
     try {
       r = await postLeader(leader, key, system, user, maxTokens);
       lastError = null;
