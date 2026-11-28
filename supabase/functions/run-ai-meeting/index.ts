@@ -430,6 +430,79 @@ type LeaderResult = {
   warning?: string;
 };
 
+/* 한 팀장 1회 호출 — 제공자별 요청 형식만 담당한다(재시도는 callLeader 가 한다) */
+async function postLeader(leader: Leader, key: string, system: string, user: string, maxTokens: number): Promise<Probe> {
+  if (leader.provider === "gemini") {
+    return await postJson(
+      `${GEMINI_BASE}/models/${encodeURIComponent(leader.model)}:generateContent?key=${encodeURIComponent(key)}`,
+      {},
+      {
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: user }] }],
+        generationConfig: { temperature: 0.85, topP: 0.95, maxOutputTokens: maxTokens },
+      },
+    );
+  } else if (leader.provider === "cohere") {
+    return await postJson(
+      "https://api.cohere.com/v2/chat",
+      { Authorization: "Bearer " + key },
+      {
+        model: leader.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        temperature: 0.6,
+        max_tokens: maxTokens,
+        stream: false,
+      },
+    );
+  } else if (leader.provider === "upstage") {
+    return await postJson(
+      "https://api.upstage.ai/v1/chat/completions",
+      { Authorization: "Bearer " + key },
+      {
+        model: leader.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        temperature: 0.7,
+        max_tokens: maxTokens,
+        stream: false,
+      },
+    );
+  } else {
+    // groq · requesty — OpenAI 호환
+    const url = leader.provider === "groq"
+      ? "https://api.groq.com/openai/v1/chat/completions"
+      : "https://router.requesty.ai/v1/chat/completions";
+    return await postJson(
+      url,
+      { Authorization: "Bearer " + key },
+      {
+        model: leader.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        temperature: 0.7,
+        max_tokens: maxTokens,
+        stream: false,
+      },
+    );
+  }
+}
+
+/* 재시도 정책: 한도(429)·서버 혼잡(4xx·5xx)·타임아웃·네트워크 오류는 2.5초 쉬고 한 번만 더 부른다 */
+const RETRY_DELAY_MS = 2_500;
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 429 || status >= 500;
+}
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function callLeader(leader: Leader, system: string, user: string, maxTokens: number): Promise<LeaderResult> {
   const base: LeaderResult = {
     id: leader.id,
@@ -447,74 +520,25 @@ async function callLeader(leader: Leader, system: string, user: string, maxToken
   if (!key) {
     return { ...base, error: `Secret '${leader.secret}' 미설정`, errorCode: "secret_missing" };
   }
-  let r: Probe;
-  try {
-    if (leader.provider === "gemini") {
-      r = await postJson(
-        `${GEMINI_BASE}/models/${encodeURIComponent(leader.model)}:generateContent?key=${encodeURIComponent(key)}`,
-        {},
-        {
-          systemInstruction: { parts: [{ text: system }] },
-          contents: [{ role: "user", parts: [{ text: user }] }],
-          generationConfig: { temperature: 0.85, topP: 0.95, maxOutputTokens: maxTokens },
-        },
-      );
-    } else if (leader.provider === "cohere") {
-      r = await postJson(
-        "https://api.cohere.com/v2/chat",
-        { Authorization: "Bearer " + key },
-        {
-          model: leader.model,
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: user },
-          ],
-          temperature: 0.6,
-          max_tokens: maxTokens,
-          stream: false,
-        },
-      );
-    } else if (leader.provider === "upstage") {
-      r = await postJson(
-        "https://api.upstage.ai/v1/chat/completions",
-        { Authorization: "Bearer " + key },
-        {
-          model: leader.model,
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: user },
-          ],
-          temperature: 0.7,
-          max_tokens: maxTokens,
-          stream: false,
-        },
-      );
-    } else {
-      // groq · requesty — OpenAI 호환
-      const url = leader.provider === "groq"
-        ? "https://api.groq.com/openai/v1/chat/completions"
-        : "https://router.requesty.ai/v1/chat/completions";
-      r = await postJson(
-        url,
-        { Authorization: "Bearer " + key },
-        {
-          model: leader.model,
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: user },
-          ],
-          temperature: 0.7,
-          max_tokens: maxTokens,
-          stream: false,
-        },
-      );
+  let r: Probe | null = null;
+  let lastError: (Error & { timeout?: boolean }) | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      r = await postLeader(leader, key, system, user, maxTokens);
+      lastError = null;
+      if (r.ok || !isRetryableStatus(r.status)) break;   // 성공이거나 다시 불러도 같은 답이면 끝
+    } catch (exc) {
+      lastError = exc as Error & { timeout?: boolean };
+      r = null;
     }
-  } catch (exc) {
-    const e = exc as Error & { timeout?: boolean };
+    if (attempt === 0) await sleepMs(RETRY_DELAY_MS);
+  }
+  if (!r) {
+    const e = lastError as (Error & { timeout?: boolean }) | null;
     return {
       ...base,
-      error: e.timeout ? e.message : scrubKeys(e.message || String(exc)),
-      errorCode: e.timeout ? "timeout" : "network",
+      error: e && e.timeout ? e.message : scrubKeys((e && e.message) || String(e)),
+      errorCode: e && e.timeout ? "timeout" : "network",
     };
   }
 
