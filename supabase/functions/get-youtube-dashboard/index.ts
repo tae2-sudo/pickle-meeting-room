@@ -414,8 +414,14 @@ async function buildChannel(meta: Dict, refreshToken: string, debug: boolean): P
   }
 
   // 3) 최근 댓글 25건 → 채널 주인 답글이 없는 미응답 댓글
+  //    전용 토큰에 댓글 스코프가 없을 수 있어(숏까뜨), 공개 댓글은 공개 토큰으로 읽는다.
+  let commentToken = token;
+  const pubEnv = meta.publicEnv ? (Deno.env.get(meta.publicEnv) || "").trim() : "";
+  if (owns && pubEnv) {
+    try { commentToken = await accessToken(pubEnv, "public-read"); } catch { /* 실패하면 전용 토큰으로 시도 */ }
+  }
   try {
-    const ct = await apiGet(token, `${DATA_API}/commentThreads`, {
+    const ct = await apiGet(commentToken, `${DATA_API}/commentThreads`, {
       part: "snippet,replies",
       allThreadsRelatedToChannelId: meta.channelId,
       maxResults: COMMENT_LIMIT,
@@ -440,7 +446,7 @@ async function buildChannel(meta: Dict, refreshToken: string, debug: boolean): P
       if (!ownerReplied && totalReplies > embedded.length && rechecks < REPLY_RECHECK_MAX) {
         rechecks++;
         try {
-          const rep = await apiGet(token, `${DATA_API}/comments`, {
+          const rep = await apiGet(commentToken, `${DATA_API}/comments`, {
             part: "snippet",
             parentId: tl.id,
             maxResults: 100,
