@@ -16,7 +16,9 @@
     '#8b5cf6', '#14b8a6', '#ef4444', '#3b82f6', '#84cc16'];
 
   var SETTINGS_KEY = 'pickle-meeting-room.settings.v2';
-  var DEFAULT_SETTINGS = { risk: 10, soon: 30, staleHours: 6, startDash: false, enterSend: true };
+  /* autoLive: 실시간(Supabase Realtime) 자동 연결 · 기본 OFF(수동 새로고침)
+     → 켜면 예전처럼 메시지·사용량이 자동으로 들어오고, 끄면 '새로고침' 버튼으로만 갱신한다. */
+  var DEFAULT_SETTINGS = { risk: 10, soon: 30, staleHours: 6, startDash: false, enterSend: true, autoLive: false };
   var APP_KEY_STORE = 'pickle_app_key'; // Edge Function 접근 키(x-app-key) — 이 기기에만 보관
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
@@ -34,6 +36,26 @@
   function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
   function clamp(n, lo, hi) { return Math.min(hi, Math.max(lo, n)); }
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+  /* 다시 그려도 읽고 있던 위치(스크롤)를 잃지 않게 한다.
+     → 새로고침·자동 갱신으로 화면이 맨 위로 튀어 오르는 문제 방지 */
+  var scrollRestoreToken = 0;
+  function cancelScrollRestore() { scrollRestoreToken++; }
+  function keepScroll(el, render) {
+    if (!el) return render();
+    var top = el.scrollTop;
+    var left = el.scrollLeft;
+    var out = render();
+    if (el.scrollTop !== top) el.scrollTop = top;
+    if (el.scrollLeft !== left) el.scrollLeft = left;
+    var token = ++scrollRestoreToken;
+    if (top && window.requestAnimationFrame) {
+      requestAnimationFrame(function () {
+        if (token === scrollRestoreToken && el.scrollTop !== top) el.scrollTop = top;
+      });
+    }
+    return out;
+  }
 
   /* ── Edge Function 접근 키 ─────────────────────────────────
      Supabase Edge Function Secrets 에 APP_ACCESS_KEY 가 설정돼 있으면,
@@ -127,6 +149,7 @@
         if (isFinite(raw.staleHours)) out.staleHours = clamp(Number(raw.staleHours), 1, 72);
         out.startDash = !!raw.startDash;
         out.enterSend = raw.enterSend !== false;
+        out.autoLive = raw.autoLive === true;   // 저장값이 없거나 true 가 아니면 자동 연결하지 않는다(기본 OFF)
       }
     } catch (e) { /* ignore */ }
     return out;
@@ -155,6 +178,7 @@
   var liveOnce = false;
 
   function scheduleReconnect(delay) {
+    if (!state.settings.autoLive) return;
     if (retryScheduled) return;
     retryScheduled = true;
     retryTimer = setTimeout(function () {
@@ -355,10 +379,10 @@
   function setConn(next) {
     connState = next;
     var el = $('#connChip');
-    var labels = { connecting: '연결 중…', live: '실시간 연결됨', error: '연결 끊김', offline: '오프라인' };
+    var labels = { connecting: '연결 중…', live: '실시간 연결됨', manual: '수동 새로고침', error: '연결 끊김', offline: '오프라인' };
     if (el) {
       el.dataset.state = next;
-      el.title = '실시간 연결 상태 · ' + (labels[next] || next);
+      el.title = (next === 'manual' ? '자동 실시간 연결 꺼짐 · 눌러서 새로고침' : '실시간 연결 상태 · ' + (labels[next] || next));
     }
     var txt = $('#connText');
     if (txt) txt.textContent = labels[next] || next;
@@ -369,7 +393,7 @@
   async function loadRemote(opts) {
     opts = opts || {};
     if (!sb) return false;
-    if (!opts.silent && connState !== 'live') setConn('connecting');
+    if (!opts.silent && connState !== 'live' && state.settings.autoLive) setConn('connecting');
     var res = await Promise.all([
       sb.from('rooms').select('*').order('created_at', { ascending: true }),
       sb.from('assistants').select('*').order('created_at', { ascending: true }),
@@ -389,6 +413,7 @@
     ui.loaded = true;
     renderAll();
     if (!ui.dashboardOpen) { renderChat(); settleAtBottom(); }
+    if (!state.settings.autoLive) setConn('manual');
     return true;
   }
 
@@ -396,6 +421,19 @@
     loadRemote({ silent: silent }).then(function (ok) {
       if (ok) toast(silent ? '최신 상태로 동기화했습니다.' : '데이터를 새로 불러왔습니다.');
     });
+  }
+
+  /* 지금 보고 있는 화면을 한 번만 새로 읽는다(자동 갱신 없이 사용자가 누를 때만) */
+  function manualRefresh() {
+    if (ui.aiOpen) { toast('AI 팀 회의실은 회의를 시작할 때 새로 그립니다.'); return; }
+    if (isYoutubeRoom()) { ytFetch(true); return; }
+    if (isCalendarRoom()) { calFetch(true); return; }
+    if (isQuotaRoom()) {
+      var b = $('#quotaRefresh');
+      if (b && !b.disabled) b.click();
+      return;
+    }
+    reload(true);
   }
 
   function dbError(err, what) {
@@ -410,8 +448,19 @@
   }
 
   /* ── realtime ────────────────────────────────────────────── */
+  /* 자동 실시간 연결이 꺼져 있으면(기본) 구독도 재연결 타이머도 두지 않는다.
+     → 서버에서 밀려오는 갱신으로 화면이 다시 그려지며 스크롤이 튀는 일이 없다. */
+  function stopRealtime() {
+    clearTimeout(retryTimer);
+    retryScheduled = false;
+    if (channel) { try { sb && sb.removeChannel(channel); } catch (e) { /* ignore */ } channel = null; }
+    liveOnce = false;
+    setConn(navigator.onLine === false ? 'offline' : 'manual');
+  }
+
   function connectRealtime() {
     if (!sb) return;
+    if (!state.settings.autoLive) { stopRealtime(); return; }
     clearTimeout(retryTimer);
     retryScheduled = false;
     if (channel) { try { sb.removeChannel(channel); } catch (e) { /* ignore */ } channel = null; }
@@ -867,7 +916,7 @@
       html += sectionHTML('일일', daily);
       html += sectionHTML('주간', weekly);
     }
-    $('#dashBody').innerHTML = html;
+    keepScroll($('#dashboard'), function () { $('#dashBody').innerHTML = html; });
   }
 
   function setDashboard(open) {
@@ -1139,6 +1188,12 @@
   }
 
   function renderCalendar() {
+    var root = $('#calendarView');
+    if (!root) return;
+    keepScroll($('#calScroll'), renderCalendarBody);
+  }
+
+  function renderCalendarBody() {
     var root = $('#calendarView');
     if (!root) return;
     var btn = $('#calRefresh');
@@ -1727,9 +1782,11 @@
     $$('#ytFilter button').forEach(function (x) {
       x.setAttribute('aria-pressed', x.getAttribute('data-f') === ytState.filter ? 'true' : 'false');
     });
-    renderYtChannels();
-    renderYtVideos();
-    renderYtComments();
+    keepScroll($('#ytScroll'), function () {
+      renderYtChannels();
+      renderYtVideos();
+      renderYtComments();
+    });
   }
 
   function bindYoutube() {
@@ -1777,7 +1834,8 @@
        「📋 마지에게 보낼 최종안 복사」 한 번으로 마크다운을 복사한다.
      · 회의 결과는 이 기기 localStorage 에만 남는다(서버·DB 로 보내지 않음).
      ─────────────────────────────────────────────────────────────── */
-  var AI_STORE = 'pickle-meeting-room.ai-meeting.v1';
+  var AI_STORE = 'pickle-meeting-room.ai-meeting.v2';
+  var AI_STORE_V1 = 'pickle-meeting-room.ai-meeting.v1';   // 기본 모드가 바뀐 뒤로는 주제·메모만 이어받는다
   var AI_MODES = {
     fast: {
       label: '⚡ 고속 2라운드', hint: '추천 · 1~2분', total: 2,
@@ -1821,7 +1879,21 @@
   function aiLoad() {
     var raw = null;
     try { raw = localStorage.getItem(AI_STORE); } catch (e) { raw = null; }
-    if (!raw) return;
+    if (!raw) {
+      /* 이전 판(v1) 저장값: 깨진 'Failed to fetch' 라운드와 풀 5라운드 선택을 물려받지 않고
+         주제·참고 메모만 살린다. 회의 모드는 항상 기본값(⚡ 고속 2라운드)으로 시작한다. */
+      try { raw = localStorage.getItem(AI_STORE_V1); } catch (e) { raw = null; }
+      if (raw) {
+        try {
+          var old = JSON.parse(raw) || {};
+          aiState.topic = String(old.topic || '');
+          aiState.notes = String(old.notes || '');
+        } catch (e) { /* 깨진 저장값은 무시 */ }
+        aiState.mode = 'fast';
+        aiSave();
+      }
+      return;
+    }
     try {
       var d = JSON.parse(raw);
       if (!d || typeof d !== 'object') return;
@@ -1898,12 +1970,15 @@
     var secs = Math.max(1, Math.round((aiState.finishedAt - aiState.startedAt) / 1000));
     var fails = aiFailCount();
     return '완료 · ' + aiMode().label + ' · ' + (secs >= 60 ? Math.floor(secs / 60) + '분 ' + (secs % 60) + '초' : secs + '초') +
-      (fails ? ' · 실패 ' + fails + '명' : ' · 5명 전원 응답');
+      (fails ? ' · ⚠ 응답 실패 ' + fails + '건' : ' · ' + AI_LEADERS.length + '명 전원 응답');
   }
   function aiFailCount() {
+    /* 실패한 응답 수. 라운드 자체가 통신 오류로 끊긴 경우(error)는 팀장 전원 실패로 센다. */
     var n = 0;
     (aiState.rounds || []).forEach(function (r) {
-      (r.results || []).forEach(function (x) { if (!x.ok) n++; });
+      var list = r.results || [];
+      if (r.status === 'error' && !list.length) { n += AI_LEADERS.length; return; }
+      n += list.filter(function (x) { return !x.ok; }).length;
     });
     return n;
   }
@@ -2106,7 +2181,17 @@
       cache: 'no-store'
     };
     if (aiAbort) init.signal = aiAbort.signal;
-    var res = await fetch(url, init);
+    var res;
+    try {
+      res = await fetch(url, init);
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+      /* fetch 자체가 실패한 경우(네트워크·CORS·함수 미배포) → 같은 실패를 라운드마다 반복하지 않는다 */
+      var netErr = new Error('AI 회의 서버에 연결하지 못했습니다(' + ((e && e.message) || 'fetch 실패') + '). 잠시 뒤 다시 시도하세요.');
+      netErr.fatal = true;
+      netErr.network = true;
+      throw netErr;
+    }
     var data = null;
     try { data = await res.json(); } catch (e) { data = null; }
     if (!res.ok || !data || data.ok === false) {
@@ -2235,6 +2320,7 @@
       var f = document.querySelector('.ai-final');
       var box = $('#aiScroll');
       if (f && box && box.scrollTo) {
+        cancelScrollRestore();
         try { box.scrollTo({ top: Math.max(0, f.offsetTop - box.offsetTop - 8), behavior: 'smooth' }); }
         catch (e) { box.scrollTop = Math.max(0, f.offsetTop - box.offsetTop - 8); }
       }
@@ -2445,7 +2531,7 @@
   function renderAiRoom() {
     var box = $('#aiScroll');
     if (!box) return;
-    box.innerHTML = aiBodyHtml();
+    keepScroll(box, function () { box.innerHTML = aiBodyHtml(); });
   }
 
   /* 진행 중인 라운드가 화면 밖이면 그 라운드 머리로 스크롤한다 */
@@ -2455,6 +2541,7 @@
     if (!box || !el || !box.scrollTo) return;
     var top = el.offsetTop - box.offsetTop - 8;
     if (Math.abs(box.scrollTop - top) < 40) return;
+    cancelScrollRestore();   // 다시 그리기 직후의 스크롤 복원보다 이 이동을 우선한다
     try { box.scrollTo({ top: Math.max(0, top), behavior: 'smooth' }); }
     catch (e) { box.scrollTop = Math.max(0, top); }
   }
@@ -2537,10 +2624,12 @@
       $('#chatView').hidden = !!ui.dashboardOpen;
       $('#dashboard').hidden = !ui.dashboardOpen;
     }
-    if (cal && !calState.inFlight && (!calState.started || (Date.now() - calState.lastAttempt) > 5 * 60 * 1000)) {
+    /* 캘린더·유튜브는 '한 번도 못 받았을 때'만 자동으로 받아온다.
+       이미 받아 둔 자료는 자동으로 다시 읽지 않고, 화면의 '새로고침' 버튼으로만 갱신한다(기본 수동). */
+    if (cal && !calState.inFlight && !calState.started) {
       calFetch(false);
     }
-    if (yt && !ytState.inFlight && (!ytState.started || (Date.now() - ytState.lastAttempt) > 60 * 1000)) {
+    if (yt && !ytState.inFlight && !ytState.started) {
       ytFetch(false);
     }
   }
@@ -3206,9 +3295,10 @@
     $('#setSoon').value = state.settings.soon;
     $('#setStale').value = state.settings.staleHours;
     $('#setStartDash').checked = !!state.settings.startDash;
+    if ($('#setAutoLive')) $('#setAutoLive').checked = !!state.settings.autoLive;
     $('#setEnterSend').checked = state.settings.enterSend !== false;
     updateThresholdHints();
-    $('#setConn').textContent = ({ connecting: '연결 중…', live: '실시간 연결됨', error: '연결 끊김', offline: '오프라인' })[connState] || connState;
+    $('#setConn').textContent = ({ connecting: '연결 중…', live: '실시간 연결됨', manual: '수동 새로고침', error: '연결 끊김', offline: '오프라인' })[connState] || connState;
     $('#lastSaved').textContent = state.updatedAt ? relTime(state.updatedAt) : '—';
     $('#appVersion').textContent = APP_VERSION;
     $('#settingsDeleteRoom').disabled = state.rooms.length <= 1;
@@ -3619,6 +3709,18 @@
     $('#setStartDash').addEventListener('change', function () {
       state.settings.startDash = this.checked; saveSettings();
     });
+    if ($('#setAutoLive')) {
+      $('#setAutoLive').addEventListener('change', function () {
+        state.settings.autoLive = this.checked; saveSettings();
+        if (state.settings.autoLive) {
+          connectRealtime();
+          toast('실시간 자동 연결을 켰습니다 · 새 메시지가 자동으로 들어옵니다.');
+        } else {
+          stopRealtime();
+          toast('실시간 자동 연결을 껐습니다 · 수동 새로고침으로 갱신합니다.');
+        }
+      });
+    }
     $('#setEnterSend').addEventListener('change', function () {
       state.settings.enterSend = this.checked; saveSettings();
     });
@@ -3627,6 +3729,15 @@
     $('#settingsDeleteRoom').addEventListener('click', deleteRoom);
     $('#exportBtn2').addEventListener('click', exportData);
     $('#refreshBtn2').addEventListener('click', function () { reload(true); });
+
+    /* 상단 연결 칩을 누르면 지금 화면을 수동으로 새로고침한다(수동 기본 모드의 주 진입점) */
+    var connChip = $('#connChip');
+    if (connChip) {
+      connChip.addEventListener('click', manualRefresh);
+      connChip.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); manualRefresh(); }
+      });
+    }
 
     $('#exportBtn').addEventListener('click', function () { closeModal('moreModal'); exportData(); });
     $('#refreshBtn').addEventListener('click', function () { closeModal('moreModal'); reload(true); });
@@ -3732,23 +3843,28 @@
     });
 
     document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState === 'visible') {
-        if (connState !== 'live' && navigator.onLine !== false) connectRealtime();
-        renderSummary();
-        if (isQuotaRoom()) { renderTop(); renderQuota(); }
-        else if (isCalendarRoom()) {
-          if ((Date.now() - calState.lastAttempt) > 60 * 1000) calFetch(false);
-          else { renderTop(); renderCalendar(); }
-        }
-        else if (isYoutubeRoom()) {
-          if ((Date.now() - ytState.lastAttempt) > 60 * 1000) ytFetch(false);
-          else { renderTop(); renderYoutube(); }
-        }
-        else if (ui.dashboardOpen) renderDashboard();
+      if (document.visibilityState !== 'visible') return;
+      /* 기본(수동) 모드: 화면으로 돌아와도 자동으로 다시 읽거나 다시 그리지 않는다.
+         갱신 시각 문구만 새로 계산해 스크롤이 튀지 않게 한다. */
+      if (!state.settings.autoLive) { renderSummary(); renderTop(); return; }
+      if (connState !== 'live' && navigator.onLine !== false) connectRealtime();
+      renderSummary();
+      if (isQuotaRoom()) { renderTop(); renderQuota(); }
+      else if (isCalendarRoom()) {
+        if ((Date.now() - calState.lastAttempt) > 60 * 1000) calFetch(false);
+        else { renderTop(); renderCalendar(); }
       }
+      else if (isYoutubeRoom()) {
+        if ((Date.now() - ytState.lastAttempt) > 60 * 1000) ytFetch(false);
+        else { renderTop(); renderYoutube(); }
+      }
+      else if (ui.dashboardOpen) renderDashboard();
     });
 
-    window.addEventListener('online', function () { connectRealtime(); });
+    window.addEventListener('online', function () {
+      if (state.settings.autoLive) connectRealtime();
+      else setConn('manual');
+    });
     window.addEventListener('offline', function () { setConn('offline'); });
 
     /* join view */
@@ -3765,12 +3881,21 @@
 
   /* ── boot ────────────────────────────────────────────────── */
   function boot() {
-    try {
-      var viewParam = new URLSearchParams(location.search).get('view');
-      if (viewParam === 'dashboard') ui.dashboardOpen = true;
-      if (viewParam === 'ai') { aiState.open = true; ui.aiOpen = true; }
-    } catch (e) { /* older browser */ }
-    try { pendingSlug = new URLSearchParams(location.search).get('room'); } catch (e) { pendingSlug = null; }
+    var params = null;
+    try { params = new URLSearchParams(location.search); } catch (e) { params = null; }
+    var viewParam = params ? params.get('view') : null;
+    var roomParam = params ? params.get('room') : null;
+    var inviteToken = params ? params.get('invite') : null;
+
+    if (viewParam === 'dashboard') ui.dashboardOpen = true;
+    if (viewParam === 'ai') { aiState.open = true; ui.aiOpen = true; }
+    pendingSlug = roomParam;
+
+    /* 첫 화면은 📺 유튜브-대시보드 — 단, ?room=·?invite=·?view= 로 분명히 지정한 때는 그대로 따른다.
+       (사용자 설정의 '대시보드로 시작'을 켜 둔 경우에는 사용량 대시보드를 먼저 보여준다) */
+    if (!pendingSlug && !inviteToken && !viewParam && !state.settings.startDash) {
+      pendingSlug = YT_SLUG;
+    }
 
     ytLoadTheme();
     ytApplyTheme();
@@ -3791,14 +3916,11 @@
       realtime: { params: { eventsPerSecond: 10 } }
     });
 
-    var inviteToken = null;
-    try { inviteToken = new URLSearchParams(location.search).get('invite'); } catch (e) { /* ignore */ }
-
     if (inviteToken) {
       initJoin(inviteToken);
     }
 
-    connectRealtime();
+    connectRealtime();   // 상태에 따라 자동 구독/수동 모드를 정한다
     loadRemote().then(function () {
       if (!ui.dashboardOpen) settleAtBottom();
       // 📅 업로드-캘린더 일정은 방에 들어가기 전에 미리 받아 둔다(드로어 배지·첫 화면이 바로 채워지게)
@@ -3808,6 +3930,9 @@
     });
 
     setInterval(function () {
+      /* 자동 실시간 연결이 꺼져 있으면(기본) 화면을 다시 그리지 않는다.
+         다시 그리면 스크롤이 위로 튀기 때문에, 문구(몇 분 전 갱신)만 새로 계산한다. */
+      if (!state.settings.autoLive) { renderSummary(); renderTop(); return; }
       renderSummary();
       if (isQuotaRoom()) { renderTop(); renderQuota(); }
       else if (isCalendarRoom()) { renderTop(); }

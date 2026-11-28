@@ -1096,6 +1096,10 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 .conn[data-state="connecting"] i { animation: connPulse 1.2s ease-in-out infinite; }
 .conn[data-state="error"] { color: var(--red-ink); background: var(--red-soft); border-color: #f6d3d3; }
 .conn[data-state="offline"] { color: #6b7280; background: var(--gray-soft); border-color: #e3e6eb; }
+/* 수동 새로고침 모드(자동 실시간 연결 꺼짐) — 누를 수 있는 칩 */
+.conn[data-state="manual"] { color: #475569; background: #eef2f7; border-color: #dbe2ea; cursor: pointer; }
+.conn[role="button"]:active { transform: scale(.97); }
+.conn[role="button"]:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
 @keyframes connPulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
 
 .avatar.emoji { font-size: 17px; line-height: 1; }
@@ -1349,6 +1353,7 @@ body.calendar-mode .conn[data-state="live"], body.yt-mode .conn[data-state="live
 body.calendar-mode .conn[data-state="connecting"], body.yt-mode .conn[data-state="connecting"] { color: #fcd34d; background: rgba(245, 158, 11, .12); border-color: rgba(245, 158, 11, .3); }
 body.calendar-mode .conn[data-state="error"], body.yt-mode .conn[data-state="error"] { color: #fda4af; background: rgba(244, 63, 94, .12); border-color: rgba(244, 63, 94, .3); }
 body.calendar-mode .conn[data-state="offline"], body.yt-mode .conn[data-state="offline"] { color: #9aa3b4; background: rgba(255, 255, 255, .05); border-color: rgba(255, 255, 255, .1); }
+body.calendar-mode .conn[data-state="manual"], body.yt-mode .conn[data-state="manual"] { color: #cbd5e1; background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
 body.calendar-mode .stage, body.yt-mode .stage { padding-bottom: 0; }
 
 .calroom {
@@ -1657,6 +1662,7 @@ body.yt-mode:not(.yt-dark) .conn[data-state="live"] { color: var(--green-ink); b
 body.yt-mode:not(.yt-dark) .conn[data-state="connecting"] { color: var(--amber-ink); background: var(--amber-soft); border-color: #f6e3c4; }
 body.yt-mode:not(.yt-dark) .conn[data-state="error"] { color: var(--red-ink); background: var(--red-soft); border-color: #f6d3d3; }
 body.yt-mode:not(.yt-dark) .conn[data-state="offline"] { color: #6b7280; background: var(--gray-soft); border-color: #e3e6eb; }
+body.yt-mode:not(.yt-dark) .conn[data-state="manual"] { color: #475569; background: #eef2f7; border-color: #dbe2ea; }
 
 .ytroom {
   flex: 1 1 auto;
@@ -1937,6 +1943,7 @@ body.ai-mode .conn[data-state="live"] { color: #6ee7b7; background: rgba(16, 185
 body.ai-mode .conn[data-state="connecting"] { color: #fcd34d; background: rgba(245, 158, 11, .12); border-color: rgba(245, 158, 11, .3); }
 body.ai-mode .conn[data-state="error"] { color: #fda4af; background: rgba(244, 63, 94, .12); border-color: rgba(244, 63, 94, .3); }
 body.ai-mode .conn[data-state="offline"] { color: #9aa3b4; background: rgba(255, 255, 255, .05); border-color: rgba(255, 255, 255, .1); }
+body.ai-mode .conn[data-state="manual"] { color: #cbd5e1; background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
 body.ai-mode .stage { padding-bottom: 0; }
 
 /* 드로어 채널 목록의 AI 회의실 항목 */

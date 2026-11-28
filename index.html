@@ -10,10 +10,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="비서 회의실" />
   <title># 비서-통합-회의실</title>
-  <link rel="manifest" href="manifest.webmanifest?v=1.8.1" />
+  <link rel="manifest" href="manifest.webmanifest?v=1.8.2" />
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="styles.css?v=1.8.1" />
+  <link rel="stylesheet" href="styles.css?v=1.8.2" />
 </head>
 <body>
   <div class="app" id="app">
@@ -30,7 +30,7 @@
         </div>
         <div class="meta-row">
           <span class="room-meta" id="roomMeta">불러오는 중…</span>
-          <span class="conn" id="connChip" data-state="connecting" title="실시간 연결 상태">
+          <span class="conn" id="connChip" data-state="connecting" role="button" tabindex="0" title="실시간 연결 상태">
             <i></i><span id="connText">연결 중…</span>
           </span>
         </div>
@@ -510,7 +510,11 @@
         <section class="set-block">
           <h4>동작</h4>
           <label class="switch-row">
-            <span><b>대시보드로 시작</b><small>앱을 열면 사용량을 먼저 보여줍니다.</small></span>
+            <span><b>실시간 자동 연결</b><small>끄면(기본) 새 메시지·사용량이 자동으로 들어오지 않고, 위의 <b>수동 새로고침</b>으로만 갱신합니다. 화면이 저절로 다시 그려지지 않아 스크롤이 튀지 않습니다.</small></span>
+            <input type="checkbox" id="setAutoLive" class="switch" />
+          </label>
+          <label class="switch-row">
+            <span><b>대시보드로 시작</b><small>앱을 열면 유튜브 대시보드 대신 사용량 요약을 먼저 보여줍니다.</small></span>
             <input type="checkbox" id="setStartDash" class="switch" />
           </label>
           <label class="switch-row">
@@ -533,7 +537,7 @@
             <button class="btn ghost" id="refreshBtn2">서버에서 새로고침</button>
           </div>
         </section>
-        <p class="app-version">비서 통합 회의실 · v<span id="appVersion">1.8.1</span> · Supabase 실시간</p>
+        <p class="app-version">비서 통합 회의실 · v<span id="appVersion">1.8.2</span> · Supabase 실시간</p>
       </div>
     </div>
   </div>
@@ -664,8 +668,8 @@
       });
     })();
   </script>
-  <script src="config.js?v=1.8.1"></script>
+  <script src="config.js?v=1.8.2"></script>
   <script src="vendor/supabase.js"></script>
-  <script src="app.js?v=1.8.1"></script>
+  <script src="app.js?v=1.8.2"></script>
 </body>
 </html>
