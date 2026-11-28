@@ -1751,6 +1751,25 @@
     el.innerHTML = shown.map(function (r) { return ytCommentRowHTML(r.ch, r.c); }).join('');
   }
 
+  /* '마지막 새로고침 18:11 · 3분 전' — 시간이 흘러도 문구가 맞도록 따로 그린다 */
+  function renderYtSyncLine() {
+    var sync = $('#ytSynced');
+    if (!sync) return;
+    if (ytState.loading && !ytState.data) {
+      sync.textContent = '유튜브에서 통계를 불러오는 중…';
+      sync.removeAttribute('data-state');
+    } else if (ytState.error && !ytState.data) {
+      sync.textContent = '유튜브 읽기 실패 · ' + ytState.error;
+      sync.setAttribute('data-state', 'error');
+    } else if (ytState.data) {
+      sync.removeAttribute('data-state');
+      sync.innerHTML = '마지막 새로고침 <b>' + esc(ytClock(ytState.fetchedAt)) + '</b> · ' + esc(relTime(ytState.fetchedAt)) +
+        (ytState.error ? ' · <span class="y-warn-ink">일부 채널 읽기 실패</span>' : '');
+    } else {
+      sync.textContent = '유튜브에서 통계를 불러오는 중…';
+    }
+  }
+
   function renderYoutube() {
     var root = $('#youtubeView');
     if (!root) return;
@@ -1761,24 +1780,10 @@
       btn.disabled = ytState.loading;
       btn.setAttribute('aria-busy', ytState.loading ? 'true' : 'false');
       var lbl = btn.querySelector('.c-refresh-label');
-      if (lbl) lbl.textContent = ytState.loading ? '불러오는 중…' : '실시간 새로고침';
+      if (lbl) lbl.textContent = ytState.loading ? '불러오는 중…' : '지금 새로고침';
     }
     var sync = $('#ytSynced');
-    if (sync) {
-      if (ytState.loading && !ytState.data) {
-        sync.textContent = '유튜브에서 통계를 불러오는 중…';
-        sync.removeAttribute('data-state');
-      } else if (ytState.error && !ytState.data) {
-        sync.textContent = '유튜브 읽기 실패 · ' + ytState.error;
-        sync.setAttribute('data-state', 'error');
-      } else if (ytState.data) {
-        sync.removeAttribute('data-state');
-        sync.innerHTML = '마지막 새로고침 <b>' + esc(ytClock(ytState.fetchedAt)) + '</b> · ' + esc(relTime(ytState.fetchedAt)) +
-          (ytState.error ? ' · <span class="y-warn-ink">일부 채널 읽기 실패</span>' : '');
-      } else {
-        sync.textContent = '유튜브에서 통계를 불러오는 중…';
-      }
-    }
+    if (sync) renderYtSyncLine();
     $$('#ytFilter button').forEach(function (x) {
       x.setAttribute('aria-pressed', x.getAttribute('data-f') === ytState.filter ? 'true' : 'false');
     });
@@ -3932,7 +3937,12 @@
     setInterval(function () {
       /* 자동 실시간 연결이 꺼져 있으면(기본) 화면을 다시 그리지 않는다.
          다시 그리면 스크롤이 위로 튀기 때문에, 문구(몇 분 전 갱신)만 새로 계산한다. */
-      if (!state.settings.autoLive) { renderSummary(); renderTop(); return; }
+      if (!state.settings.autoLive) {
+        renderSummary();
+        renderTop();
+        if (isYoutubeRoom()) renderYtSyncLine();
+        return;
+      }
       renderSummary();
       if (isQuotaRoom()) { renderTop(); renderQuota(); }
       else if (isCalendarRoom()) { renderTop(); }
