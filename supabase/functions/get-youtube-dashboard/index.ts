@@ -118,6 +118,9 @@ const CHANNELS: Dict[] = [
     flag: "⭐",
     channelId: "UCfxVHXwRxYGGInnytvCb2FA",
     env: "YT_REFRESH_TOKEN_SK",
+    // 숏까뜨 토큰은 별도 데스크톱 OAuth 클라이언트(google-oauth-desktop)로 발급돼
+    // 전역 클라이언트로는 교환되지 않는다(401 unauthorized_client). 전용 클라이언트를 쓴다.
+    clientEnv: { id: "YT_CLIENT_ID_SK", secret: "YT_CLIENT_SECRET_SK" },
     publicEnv: "YT_REFRESH_TOKEN_KR",   // 공개 데이터만 읽을 때 빌려 쓰는 토큰
     url: "https://www.youtube.com/@숏까뜨",
   },
@@ -158,12 +161,14 @@ function googleError(body: Dict): string {
 }
 
 // ────────────────────────────── OAuth ──────────────────────────────
-async function accessToken(refreshToken: string, cacheKey: string): Promise<string> {
+async function accessToken(refreshToken: string, cacheKey: string, clientEnv?: Dict): Promise<string> {
   const hit = tokenCache[cacheKey];
   if (hit && hit.exp > Date.now() + 90_000) return hit.token;
 
-  const clientId = Deno.env.get("YT_CLIENT_ID");
-  const clientSecret = Deno.env.get("YT_CLIENT_SECRET");
+  // 채널별 OAuth 클라이언트 override (예: 숏까뜨는 별도 데스크톱 클라이언트로 발급한 토큰)
+  // 지정된 시크릿이 없으면 기존 전역 YT_CLIENT_ID / YT_CLIENT_SECRET 를 쓴다.
+  const clientId = (clientEnv?.id ? Deno.env.get(clientEnv.id) : "") || Deno.env.get("YT_CLIENT_ID");
+  const clientSecret = (clientEnv?.secret ? Deno.env.get(clientEnv.secret) : "") || Deno.env.get("YT_CLIENT_SECRET");
   if (!clientId || !clientSecret) throw new Error("YouTube OAuth 클라이언트 시크릿이 없습니다.");
   if (!refreshToken) throw new Error("리프레시 토큰이 없습니다.");
 
@@ -281,7 +286,7 @@ async function buildChannel(meta: Dict, refreshToken: string, debug: boolean): P
   let token: string;
   let owns = true;   // 이 채널의 전용 토큰으로 읽었는지(분석 API 사용 가능)
   try {
-    token = await accessToken(refreshToken, meta.key);
+    token = await accessToken(refreshToken, meta.key, meta.clientEnv);
   } catch (err) {
     // 전용 토큰이 없으면 다른 채널의 토큰으로 '공개 데이터'만 읽는다 —
     // 새 채널을 추가하고 시크릿을 아직 넣지 않아도 카드·최근 영상·댓글이 채워진다.
